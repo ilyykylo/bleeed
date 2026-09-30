@@ -28,6 +28,7 @@ afks = {}
 welcome_channels = {}
 boost_roles = {}
 autoresponders = {}
+autoroles = {}
 
 
 def embed(title=None, description=None):
@@ -48,21 +49,29 @@ def fmt_user(member):
 
 @bot.event
 async def on_ready():
-    await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help • bleeed"))
+    await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help â¢ bleeed"))
     print(f"bleeed online as {bot.user} ({bot.user.id})")
 
 
 @bot.event
 async def on_member_join(member):
     channel_id = welcome_channels.get(member.guild.id)
-    if not channel_id:
-        return
-    channel = member.guild.get_channel(channel_id)
-    if not channel:
-        return
-    e = embed("welcome", f"welcome {member.mention} to **{member.guild.name}**!\n\nmember **#{member.guild.member_count}**")
-    e.set_thumbnail(url=member.display_avatar.url)
-    await channel.send(embed=e)
+    if channel_id:
+        channel = member.guild.get_channel(channel_id)
+        if channel:
+            e = embed("welcome", f"welcome {member.mention} to **{member.guild.name}**!\n\nmember **#{member.guild.member_count}**")
+            e.set_thumbnail(url=member.display_avatar.url)
+            await channel.send(embed=e)
+
+    role_id = autoroles.get(member.guild.id)
+    if role_id:
+        role = member.guild.get_role(role_id)
+        me = member.guild.me
+        if role and me and role < me.top_role:
+            try:
+                await member.add_roles(role, reason="bleeed autorole")
+            except discord.HTTPException:
+                pass
 
 
 @bot.event
@@ -78,7 +87,7 @@ async def on_member_update(before, after):
                     pass
         channel = after.guild.system_channel
         if channel:
-            await channel.send(embed=embed("boost", f"thank you {after.mention} for boosting **{after.guild.name}**! ♡"))
+            await channel.send(embed=embed("boost", f"thank you {after.mention} for boosting **{after.guild.name}**! â¡"))
 
 
 @bot.event
@@ -99,7 +108,7 @@ async def on_message(message):
 
     for uid, data in list(afks.items()):
         if uid != message.author.id and f"<@{uid}>" in message.content:
-            await message.channel.send(embed=embed("afk", f"**{data['name']}** is AFK — {data['reason']}"), delete_after=8)
+            await message.channel.send(embed=embed("afk", f"**{data['name']}** is AFK â {data['reason']}"), delete_after=8)
 
     # autoresponders only run on normal messages, never commands
     if message.guild and not content.startswith(PREFIX):
@@ -126,6 +135,18 @@ async def help(ctx, command_name: str = None):
             "avatar": ("Shows a user's avatar.", "avatar [member]", ",avatar @user"),
             "userinfo": ("Shows information about a user.", "userinfo [member]", ",userinfo @user"),
             "serverinfo": ("Shows information about the server.", "serverinfo", ",serverinfo"),
+            "botinfo": ("Shows information about bleeed.", "botinfo", ",botinfo"),
+            "banner": ("Shows a user's banner.", "banner [member]", ",banner @user"),
+            "channelinfo": ("Shows information about a channel.", "channelinfo [channel]", ",channelinfo #general"),
+            "roleinfo": ("Shows information about a role.", "roleinfo <role>", ",roleinfo @Member"),
+            "membercount": ("Shows the server member count.", "membercount", ",membercount"),
+            "roles": ("Lists the server's roles.", "roles", ",roles"),
+            "emojis": ("Lists the server's custom emojis.", "emojis", ",emojis"),
+            "stickers": ("Lists the server's stickers.", "stickers", ",stickers"),
+            "permissions": ("Shows your permissions in this server.", "permissions [member]", ",permissions @user"),
+            "guildicon": ("Shows the server icon.", "guildicon", ",guildicon"),
+            "boost": ("Shows the server's boost information.", "boost", ",boost"),
+            "autorole": ("Configures a role to give new members automatically.", "autorole [role]", ",autorole @Member"),
             "timeout": ("Mutes a member for a set amount of time.", "timeout <member> [minutes] [reason]", ",timeout @user 10 spam"),
             "unmute": ("Removes a member's timeout.", "unmute <member>", ",unmute @user"),
             "um": ("Removes a member's timeout.", "um <member>", ",um @user"),
@@ -176,25 +197,31 @@ async def help(ctx, command_name: str = None):
             f"Command: {command.qualified_name}\n"
             f"{description}\n\n"
             f"**Aliases**\n{aliases}\n\n"
-            f"Usage\n`Syntax: {PREFIX}{syntax}\nExample: {example}`"
+            f"**Usage**\n`Syntax: {PREFIX}{syntax}\nExample: {example}`"
         )
         return await ctx.send(embed=embed(None, desc))
 
     e = embed("bleeed", f"to use **bleeed** you must use the prefix `{PREFIX}`.\n\nexample: `{PREFIX}ping`\n\nuse `{PREFIX}commands` to see every command.\nuse `{PREFIX}help <command>` for command usage, aliases, and examples.")
-    e.set_footer(text="bleeed • simple, fast, clean")
+    e.set_footer(text="bleeed â¢ simple, fast, clean")
     await ctx.send(embed=e)
 
 @bot.command(name="commands", aliases=["cmd"])
 async def command_list(ctx):
     groups = {
-        "moderation": ["ban", "unban", "kick", "mute", "warn", "warnings", "purge", "lock", "unlock", "snipe"],
-        "utility": ["ping", "uptime", "avatar", "userinfo", "serverinfo", "poll", "afk", "welcome", "disablewelcome", "booster", "ar"],
-        "fun": ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "roast", "compliment", "wyr", "mock", "reverse"],
-        "social": ["hug", "pat", "slap", "love", "simp", "gayrate", "howlucky", "shipname", "ship"],
+        "Information": ["afk", "avatar", "banner", "botinfo", "channelinfo", "emojis", "membercount", "permissions", "reverse", "roleinfo", "roles", "serverinfo", "stickers", "userinfo", "guildicon"],
+        "Server": ["autoreact", "autoresponder", "autorole", "boost", "booster", "boosterremove", "disablewelcome", "snipe", "welcome"],
+        "Security": ["lock", "unlock", "snipe"],
+        "Moderation": ["ban", "unban", "kick", "mute", "unmute", "um", "untimeout", "warn", "warnings", "purge"],
+        "Fun": ["8ball", "coinflip", "choose", "fact", "joke", "mock", "rate", "roll", "wyr", "reverse"],
+        "Social": ["hug", "pat", "slap", "love", "simp", "gayrate", "howlucky", "shipname", "ship", "roast", "compliment"],
     }
-    text = "\n\n".join(f"**{k}**\n" + " • ".join(f"`{PREFIX}{x}`" for x in v) for k, v in groups.items())
-    e = embed("bleeed commands", text)
-    e.set_footer(text=f"use {PREFIX}help <command> for details")
+    text = (
+        "## bleeed help\n"
+        "-# Experience the ultimate Discord bot designed for seamless management and community engagement.\n\n"
+        + "\n\n".join(f"### {k}\n" + " ".join(f"`{x}`" for x in v) for k, v in groups.items())
+        + f"\n\n-# Use `{PREFIX}help (command)` for details on a specific command"
+    )
+    e = embed(None, text)
     await ctx.send(embed=e)
 
 
@@ -231,6 +258,86 @@ async def serverinfo(ctx):
     g = ctx.guild
     await ctx.send(embed=embed("server info", f"**name:** {g.name}\n**id:** `{g.id}`\n**owner:** <@{g.owner_id}>\n**members:** `{g.member_count}`\n**channels:** `{len(g.channels)}`\n**roles:** `{len(g.roles)}`\n**created:** <t:{int(g.created_at.timestamp())}:R>"))
 
+
+@bot.command()
+async def botinfo(ctx):
+    e = embed("bleeed", f"**name:** `{bot.user}`\n**id:** `{bot.user.id}`\n**servers:** `{len(bot.guilds)}`\n**users:** `{sum(g.member_count or 0 for g in bot.guilds)}`\n**latency:** `{round(bot.latency * 1000)}ms`\n**prefix:** `{PREFIX}`")
+    e.set_thumbnail(url=bot.user.display_avatar.url)
+    await ctx.send(embed=e)
+
+@bot.command()
+async def banner(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    asset = member.banner
+    if asset is None:
+        return await ctx.send(embed=embed("banner", f"{member.mention} doesn't have a banner."))
+    e = embed(f"{member.display_name}'s banner")
+    e.set_image(url=asset.url)
+    await ctx.send(embed=e)
+
+@bot.command()
+async def channelinfo(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    e = embed("channel info", f"**name:** {channel.mention}\n**id:** `{channel.id}`\n**type:** `{channel.type}`\n**created:** <t:{int(channel.created_at.timestamp())}:R>")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def roleinfo(ctx, role: discord.Role):
+    e = embed("role info", f"**role:** {role.mention}\n**id:** `{role.id}`\n**members:** `{len(role.members)}`\n**position:** `{role.position}`\n**managed:** `{role.managed}`")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def membercount(ctx):
+    await ctx.send(embed=embed("member count", f"**{ctx.guild.member_count}** members are in **{ctx.guild.name}**."))
+
+@bot.command()
+async def roles(ctx):
+    items = [r.mention for r in reversed(ctx.guild.roles) if r.name != "@everyone"]
+    text = " ".join(items) if items else "no roles."
+    await ctx.send(embed=embed("roles", text[:4000]))
+
+@bot.command()
+async def emojis(ctx):
+    text = " ".join(str(e) for e in ctx.guild.emojis) or "no custom emojis."
+    await ctx.send(embed=embed("emojis", text[:4000]))
+
+@bot.command()
+async def stickers(ctx):
+    text = " ".join(f"`{s.name}`" for s in ctx.guild.stickers) or "no stickers."
+    await ctx.send(embed=embed("stickers", text[:4000]))
+
+@bot.command()
+async def permissions(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    perms = [name.replace("_", " ") for name, value in member.guild_permissions if value]
+    await ctx.send(embed=embed("permissions", f"**{member.mention}**\n\n" + " â¢ ".join(f"`{p}`" for p in perms)))
+
+@bot.command()
+async def guildicon(ctx):
+    e = embed("server icon")
+    if ctx.guild.icon:
+        e.set_image(url=ctx.guild.icon.url)
+    else:
+        e.description = "this server doesn't have an icon."
+    await ctx.send(embed=e)
+
+@bot.command()
+async def boost(ctx):
+    g = ctx.guild
+    await ctx.send(embed=embed("boost", f"**level:** `{g.premium_tier}`\n**boosts:** `{g.premium_subscription_count or 0}`\n**boosters:** `{sum(1 for m in g.members if m.premium_since)}`"))
+
+@bot.command()
+async def autorole(ctx, role: discord.Role = None):
+    if role is None:
+        current = autoroles.get(ctx.guild.id)
+        return await ctx.send(embed=embed("autorole", f"current role: {current and current.mention or 'not configured'}"))
+    if not ctx.author.guild_permissions.manage_roles:
+        return await ctx.send(embed=embed("no permission", "you need Manage Roles."))
+    me = ctx.guild.me
+    if not me or role >= me.top_role:
+        return await ctx.send(embed=embed("error", "my role must be above the autorole."))
+    autoroles[ctx.guild.id] = role.id
+    await ctx.send(embed=embed("autorole set", f"new members will receive {role.mention}."))
 
 @bot.command(aliases=["to", "mute"])
 async def timeout(ctx, member: discord.Member, minutes: int = 10, *, reason="no reason provided"):
@@ -300,7 +407,7 @@ async def warnings(ctx, member: discord.Member = None):
     member = member or ctx.author
     items = warnings.get(ctx.guild.id, {}).get(member.id, [])
     text = "\n".join(f"**{i}.** {r}" for i, r in enumerate(items, 1)) or "no warnings."
-    await ctx.send(embed=embed(f"warnings • {member.display_name}", text))
+    await ctx.send(embed=embed(f"warnings â¢ {member.display_name}", text))
 
 
 @bot.command(aliases=["p", "clear"])
@@ -412,7 +519,7 @@ async def autoresponder(ctx, action: str = "list", *, data: str = ""):
     if action == "list":
         if not guild_data:
             return await ctx.send(embed=embed("autoresponders", "no autoresponders are configured."))
-        text = "\n".join(f"`{trigger}` → {response}" for trigger, response in list(guild_data.items())[:25])
+        text = "\n".join(f"`{trigger}` â {response}" for trigger, response in list(guild_data.items())[:25])
         return await ctx.send(embed=embed("autoresponders", text))
 
     await ctx.send(embed=embed("autoresponder", f"usage: `{PREFIX}ar add trigger | response`"))
@@ -425,9 +532,9 @@ async def afk(ctx, *, reason="AFK"):
 
 @bot.command()
 async def poll(ctx, *, question):
-    msg = await ctx.send(embed=embed("poll", question + "\n\n👍 yes\n👎 no"))
-    await msg.add_reaction("👍")
-    await msg.add_reaction("👎")
+    msg = await ctx.send(embed=embed("poll", question + "\n\nð yes\nð no"))
+    await msg.add_reaction("ð")
+    await msg.add_reaction("ð")
 
 
 @bot.command()
@@ -447,7 +554,7 @@ async def eightball(ctx, *, question):
 async def coinflip(ctx): await ctx.send(embed=embed("coinflip", random.choice(["heads", "tails"])))
 
 @bot.command()
-async def roll(ctx, sides: int = 6): await ctx.send(embed=embed("roll", f"🎲 **{random.randint(1, max(2, sides))}**"))
+async def roll(ctx, sides: int = 6): await ctx.send(embed=embed("roll", f"ð² **{random.randint(1, max(2, sides))}**"))
 
 @bot.command()
 async def rate(ctx, *, thing): await ctx.send(embed=embed("rate", f"I'd rate **{thing}** a **{random.randint(0,100)}/100**."))
@@ -479,19 +586,21 @@ async def howlucky(ctx): await ctx.send(embed=embed("luck", f"your luck today is
 @bot.command()
 async def shipname(ctx, a: discord.Member, b: discord.Member):
     n = (a.display_name[:len(a.display_name)//2] + b.display_name[len(b.display_name)//2:]).replace(" ", "")
-    await ctx.send(embed=embed("ship name", f"💗 **{n}**"))
+    await ctx.send(embed=embed("ship name", f"ð **{n}**"))
 
 @bot.command()
-async def ship(ctx, a: discord.Member, b: discord.Member): await ctx.send(embed=embed("ship", f"{a.mention} × {b.mention} = **{random.randint(0,100)}%**"))
+async def ship(ctx, a: discord.Member, b: discord.Member): await ctx.send(embed=embed("ship", f"{a.mention} Ã {b.mention} = **{random.randint(0,100)}%**"))
 
 for name, text in {
     "hug":"gave someone a hug.", "pat":"gave someone a pat.", "slap":"bonked someone.", "love":"sent some love.", "roast":"got roasted.", "compliment":"got a compliment."
 }.items():
-    async def social(ctx, member: discord.Member = None, _text=text):
-        member = member or ctx.author
-        await ctx.send(embed=embed(name, f"{ctx.author.mention} {_text.replace('someone', member.mention)}"))
-    social.__name__ = name
-    bot.command()(social)
+    def make_social(command_name, command_text):
+        async def social(ctx, member: discord.Member = None):
+            target = member or ctx.author
+            await ctx.send(embed=embed(command_name, f"{ctx.author.mention} {command_text.replace('someone', target.mention)}"))
+        social.__name__ = command_name
+        return social
+    bot.command()(make_social(name, text))
 
 
 @bot.event
