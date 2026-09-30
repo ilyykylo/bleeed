@@ -57,6 +57,13 @@ def info_embed(ctx, title, fields, *, thumbnail=True):
     return e
 
 
+def result_embed(title, label, value, *, extra=None):
+    lines = [f"# {title}", f"**{label}**\n{value}"]
+    if extra:
+        for name, content in extra:
+            lines.append(f"**{name}**\n{content}")
+    return discord.Embed(description="\n\n".join(lines), color=COLOR)
+
 def role_ok(member, role_ids):
     return any(r.id in role_ids for r in member.roles)
 
@@ -158,11 +165,25 @@ COMMAND_INFO = {
     "remind": ("Create a personal reminder.", "remind <duration> <message>", "remind 30m check chat", []),
 }
 
+# Extra utility commands
+COMMAND_INFO.update({
+    "serverstats": ("Show a compact server statistics overview.", "serverstats", "serverstats", []),
+    "firstmessage": ("Find the oldest message in the current channel.", "firstmessage", "firstmessage", []),
+    "invites": ("List server invites.", "invites", "invites", []),
+    "inviteinfo": ("Look up an invite code.", "inviteinfo <code>", "inviteinfo abcDEF", []),
+    "voiceinfo": ("Show your current voice-channel information.", "voiceinfo", "voiceinfo", ["vcinfo"]),
+    "say": ("Send a message as bleeed. Staff only.", "say <message>", "say hello everyone", []),
+    "topic": ("Set the current channel topic.", "topic <text>", "topic community chat", []),
+    "unwarn": ("Remove one warning from a member.", "unwarn <member> <number>", "unwarn @user 1", []),
+    "clearwarnings": ("Clear all warnings for a member.", "clearwarnings <member>", "clearwarnings @user", []),
+    "servericon": ("Show the server icon.", "servericon", "servericon", ["icon"]),
+})
+
 CATEGORIES = [
-    ("Information", ["afk", "avatar", "banner", "botinfo", "channelinfo", "commands", "emojis", "guildicon", "help", "membercount", "permissions", "roleinfo", "roles", "serverinfo", "stickers", "userinfo"]),
+    ("Information", ["afk", "avatar", "banner", "botinfo", "channelinfo", "commands", "emojis", "firstmessage", "guildicon", "help", "inviteinfo", "invites", "membercount", "permissions", "roleinfo", "roles", "servericon", "serverinfo", "serverstats", "stickers", "userinfo", "voiceinfo"]),
     ("Server", ["ar", "autorole", "autoreact", "booster", "boosterremove", "boost", "filter", "welcome", "disablewelcome", "poll", "ticket", "close", "giveaway", "gaw", "announce", "create", "remind"]),
     ("Security", ["antinuke", "antiraid", "security"]),
-    ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "addrole", "removerole"]),
+    ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "unwarn", "clearwarnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "addrole", "removerole", "topic", "say"]),
     ("Fun", ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "wyr", "mock", "reverse", "truth", "dare", "wouldyou"]),
     ("Social", ["hug", "pat", "slap", "love", "simp", "gayrate", "howlucky", "ship", "shipname", "roast", "compliment"]),
 ]
@@ -402,21 +423,29 @@ async def botinfo(ctx):
     ])
     await ctx.send(embed=e)
 
-@bot.command(aliases=["ui"])
+@bot.hybrid_command(name="userinfo", aliases=["ui"], description="View detailed information about a member.")
 async def userinfo(ctx, member: discord.Member=None):
     member = member or ctx.author
-    roles = ", ".join(r.mention for r in member.roles[1:]) or "none"
-    joined = f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "unknown"
-    e = info_embed(ctx, "User Information", [
-        ("User", f"{member.mention} · `{member.id}`", False),
-        ("Created", f"<t:{int(member.created_at.timestamp())}:F>\n<t:{int(member.created_at.timestamp())}:R>", True),
-        ("Joined", f"{joined}", True),
-        ("Roles", roles, False),
-    ], thumbnail=False)
-    e.set_thumbnail(url=member.display_avatar.url)
-    await ctx.send(embed=e)
+    try:
+        joined = f"<t:{int(member.joined_at.timestamp())}:F>\n<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "unknown"
+        roles = [r.mention for r in member.roles if not r.is_default()]
+        role_text = " · ".join(roles[-15:]) if roles else "none"
+        created = int(member.created_at.timestamp())
+        e = discord.Embed(color=COLOR)
+        e.description = (
+            "# User Information\n\n"
+            f"**User**\n{member.mention} · `{member.id}`\n\n"
+            f"**Created**\n<t:{created}:F> · <t:{created}:R>\n\n"
+            f"**Joined**\n{joined}\n\n"
+            f"**Roles**\n{role_text}"
+        )
+        e.set_thumbnail(url=member.display_avatar.url)
+        await ctx.send(embed=e)
+    except Exception as exc:
+        print(f"userinfo error: {type(exc).__name__}: {exc}")
+        await ctx.send(embed=result_embed("User Information", "Error", "I couldn't load that member's information."))
 
-@bot.command(aliases=["si"])
+@bot.hybrid_command(name="serverinfo", aliases=["si"], description="View information about the server.")
 async def serverinfo(ctx):
     g = ctx.guild
     e = info_embed(ctx, "Server Information", [
@@ -429,7 +458,7 @@ async def serverinfo(ctx):
     ])
     await ctx.send(embed=e)
 
-@bot.command()
+@bot.hybrid_command(name="channelinfo", description="View information about a channel.")
 async def channelinfo(ctx, channel: discord.TextChannel=None):
     c = channel or ctx.channel
     e = info_embed(ctx, "Channel Information", [
@@ -440,7 +469,7 @@ async def channelinfo(ctx, channel: discord.TextChannel=None):
     ])
     await ctx.send(embed=e)
 
-@bot.command()
+@bot.hybrid_command(name="roleinfo", description="View information about a role.")
 async def roleinfo(ctx, role: discord.Role):
     e = info_embed(ctx, "Role Information", [
         ("Role", f"{role.mention} · `{role.id}`", False),
@@ -451,7 +480,7 @@ async def roleinfo(ctx, role: discord.Role):
     ])
     await ctx.send(embed=e)
 
-@bot.command()
+@bot.hybrid_command(name="membercount", description="Show server member counts.")
 async def membercount(ctx):
     g = ctx.guild
     humans = sum(not m.bot for m in g.members)
@@ -461,6 +490,135 @@ async def membercount(ctx):
         ("Humans", f"`{humans}`", True),
         ("Bots", f"`{bots}`", True),
     ])
+    await ctx.send(embed=e)
+
+@bot.hybrid_command(name="serverstats", description="Show compact server statistics.")
+async def serverstats(ctx):
+    g = ctx.guild
+    humans = sum(not m.bot for m in g.members)
+    bots = g.member_count - humans
+    text_channels = sum(isinstance(c, discord.TextChannel) for c in g.channels)
+    voice_channels = sum(isinstance(c, discord.VoiceChannel) for c in g.channels)
+    categories = sum(isinstance(c, discord.CategoryChannel) for c in g.channels)
+    e = info_embed(ctx, "Server Statistics", [
+        ("Members", f"`{g.member_count}` total · `{humans}` humans · `{bots}` bots", False),
+        ("Channels", f"`{text_channels}` text · `{voice_channels}` voice · `{categories}` categories", False),
+        ("Roles", f"`{len(g.roles) - 1}` custom", True),
+        ("Emojis", f"`{len(g.emojis)}`", True),
+        ("Stickers", f"`{len(g.stickers)}`", True),
+        ("Boosts", f"`{g.premium_subscription_count or 0}`", True),
+    ])
+    await ctx.send(embed=e)
+
+@bot.hybrid_command(name="firstmessage", description="Find the oldest message in the current channel.")
+async def firstmessage(ctx):
+    try:
+        oldest = None
+        async for msg in ctx.channel.history(limit=1, oldest_first=True):
+            oldest = msg
+        if not oldest:
+            return await ctx.send(embed=make_embed("first message", "no messages were found."))
+        content = discord.utils.escape_markdown(oldest.content[:1000]) or "[no text]"
+        value = (
+            f"[jump to message]({oldest.jump_url})\n"
+            f"by {oldest.author.mention}\n"
+            f"<t:{int(oldest.created_at.timestamp())}:F>\n\n"
+            f"{content}"
+        )
+        await ctx.send(embed=result_embed("First Message", "Message", value))
+    except (discord.Forbidden, discord.HTTPException):
+        await ctx.send(embed=make_embed("first message", "I couldn't read this channel's history."))
+
+@bot.hybrid_command(name="invites", description="List server invites.")
+@commands.has_guild_permissions(manage_guild=True)
+async def invites(ctx):
+    try:
+        data = await ctx.guild.invites()
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("invites", "I need **Manage Server** to view invites."))
+    if not data:
+        return await ctx.send(embed=make_embed("invites", "no active invites were found."))
+    lines=[]
+    for inv in data[:20]:
+        uses = inv.uses if inv.uses is not None else 0
+        lines.append(f"`{inv.code}` · **{uses}** uses · {inv.channel.mention if inv.channel else 'unknown channel'}")
+    await ctx.send(embed=make_embed("Invites", "\n".join(lines)))
+
+@bot.hybrid_command(name="inviteinfo", description="Look up an invite code.")
+async def inviteinfo(ctx, code: str):
+    code = code.split("/")[-1].split("?")[0]
+    try:
+        inv = await bot.fetch_invite(code, with_counts=True)
+    except (discord.NotFound, discord.HTTPException):
+        return await ctx.send(embed=make_embed("invite info", "that invite is invalid or expired."))
+    guild_name = inv.guild.name if inv.guild else "unknown"
+    channel_name = inv.channel.name if inv.channel else "unknown"
+    e = result_embed("Invite Information", "Code", f"`{inv.code}`", extra=[
+        ("Server", f"**{guild_name}**"),
+        ("Channel", f"**#{channel_name}**"),
+        ("Members", f"`{inv.approximate_member_count or 0}` total · `{inv.approximate_presence_count or 0}` online"),
+    ])
+    await ctx.send(embed=e)
+
+@bot.hybrid_command(name="voiceinfo", aliases=["vcinfo"], description="Show your current voice-channel information.")
+async def voiceinfo(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    voice = member.voice
+    if not voice or not voice.channel:
+        return await ctx.send(embed=make_embed("Voice Information", f"{member.mention} is not connected to a voice channel."))
+    c = voice.channel
+    e = info_embed(ctx, "Voice Information", [
+        ("Member", f"{member.mention} · `{member.id}`", False),
+        ("Channel", f"{c.mention} · `{c.id}`", False),
+        ("Members", f"`{len(c.members)}`", True),
+        ("Mute", f"`{member.voice.self_mute or member.voice.mute}`", True),
+        ("Deaf", f"`{member.voice.self_deaf or member.voice.deaf}`", True),
+    ])
+    await ctx.send(embed=e)
+
+@bot.hybrid_command(name="say", description="Send a message as bleeed.")
+@commands.has_guild_permissions(manage_messages=True)
+async def say(ctx, *, message: str):
+    await ctx.send(message)
+
+@bot.hybrid_command(name="topic", description="Set the current channel topic.")
+@commands.has_guild_permissions(manage_channels=True)
+async def topic(ctx, *, text: str):
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return await ctx.send(embed=make_embed("topic", "this command can only be used in a text channel."))
+    if len(text) > 1024:
+        return await ctx.send(embed=make_embed("topic", "the topic must be 1024 characters or less."))
+    await ctx.channel.edit(topic=text, reason=f"topic changed by {ctx.author}")
+    await ctx.send(embed=result_embed("Channel Updated", "Topic", text, extra=[("Channel", ctx.channel.mention)]))
+
+@bot.hybrid_command(name="unwarn", description="Remove one warning from a member.")
+async def unwarn(ctx, member: discord.Member, number: int):
+    if not role_ok(ctx.author, WARN_ROLES):
+        return await ctx.send(embed=make_embed("no permission", "you don't have the required warn role."))
+    if not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("error", "you can't moderate that member."))
+    items = warnings[ctx.guild.id][member.id]
+    if number < 1 or number > len(items):
+        return await ctx.send(embed=make_embed("warning", f"warning **#{number}** doesn't exist for {member.mention}."))
+    removed = items.pop(number - 1)
+    await ctx.send(embed=result_embed("Warning Removed", "User", member.mention, extra=[("Warning", f"`#{number}` · {removed}"), ("Moderator", ctx.author.mention)]))
+
+@bot.hybrid_command(name="clearwarnings", description="Clear all warnings for a member.")
+async def clearwarnings(ctx, member: discord.Member):
+    if not role_ok(ctx.author, WARN_ROLES):
+        return await ctx.send(embed=make_embed("no permission", "you don't have the required warn role."))
+    if not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("error", "you can't moderate that member."))
+    count = len(warnings[ctx.guild.id][member.id])
+    warnings[ctx.guild.id][member.id].clear()
+    await ctx.send(embed=result_embed("Warnings Cleared", "User", member.mention, extra=[("Removed", f"`{count}` warnings"), ("Moderator", ctx.author.mention)]))
+
+@bot.hybrid_command(name="servericon", aliases=["icon"], description="Show the server icon.")
+async def servericon(ctx):
+    if not ctx.guild.icon:
+        return await ctx.send(embed=make_embed("Server Icon", "this server doesn't have an icon."))
+    e=make_embed("Server Icon")
+    e.set_image(url=ctx.guild.icon.url)
     await ctx.send(embed=e)
 
 class RolesView(discord.ui.View):
@@ -506,7 +664,7 @@ class RolesView(discord.ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
-@bot.command()
+@bot.hybrid_command(name="roles", description="List server roles.")
 async def roles(ctx):
     # Match the compact Bleed/Greed-style role directory: 10 roles per page.
     role_list = list(reversed(ctx.guild.roles))
@@ -529,10 +687,10 @@ async def roles(ctx):
     msg = await ctx.send(embed=view.embed(), view=view)
     view.message = msg
 
-@bot.command()
+@bot.hybrid_command(name="emojis", description="List custom server emojis.")
 async def emojis(ctx): await ctx.send(embed=make_embed("emojis", " ".join(str(e) for e in ctx.guild.emojis) or "no custom emojis."))
 
-@bot.command()
+@bot.hybrid_command(name="stickers", description="List server stickers.")
 async def stickers(ctx): await ctx.send(embed=make_embed("stickers", " ".join(f"`{s.name}`" for s in ctx.guild.stickers) or "no stickers."))
 
 @bot.command()
@@ -712,77 +870,132 @@ async def filter(ctx,action="list",*,word=""):
 async def security(ctx):
     a=antinuke_config[ctx.guild.id]; r=antiraid_config[ctx.guild.id]; await ctx.send(embed=make_embed("security",f"**antinuke:** `{a['enabled']}` • `{a['threshold']}` / `{a['window']}s` • `{a['action']}`\n**antiraid:** `{r['enabled']}` • `{r['threshold']}` / `{r['window']}s`\n**filter:** `{filter_enabled[ctx.guild.id]}`"))
 
-@bot.command(name="8ball", aliases=["8","ball"])
-async def eightball(ctx,*,question): await ctx.send(embed=make_embed("8ball",random.choice(["yes.","no.","probably.","maybe.","ask again later.","definitely.","the stars say yes.","not looking good."])))
+@bot.command(name="8ball", aliases=["8", "ball"])
+async def eightball(ctx, *, question):
+    answer = random.choice(["yes.", "no.", "probably.", "maybe.", "ask again later.", "definitely.", "the stars say yes.", "not looking good."])
+    await ctx.send(embed=result_embed("8ball", "Question", question, extra=[("Answer", f"**{answer}**")]))
 
 @bot.command()
-async def coinflip(ctx): await ctx.send(embed=make_embed("coinflip",random.choice(["heads","tails"])))
+async def coinflip(ctx):
+    result = random.choice(["heads", "tails"])
+    await ctx.send(embed=result_embed("Coinflip", "Result", f"**{result}**"))
 
 @bot.command()
-async def roll(ctx,sides:int=6): await ctx.send(embed=make_embed("roll",f"🎲 **{random.randint(1,max(2,min(sides,100000)))}**"))
+async def roll(ctx, sides: int = 6):
+    sides = max(2, min(sides, 100000))
+    result = random.randint(1, sides)
+    await ctx.send(embed=result_embed("Roll", "Result", f"**{result}**", extra=[("Sides", f"`{sides}`")]))
 
 @bot.command()
-async def choose(ctx,*,choices):
-    o=[x.strip() for x in choices.split("|") if x.strip()]; await ctx.send(embed=make_embed("choice",random.choice(o) if len(o)>=2 else "separate choices with `|`."))
+async def choose(ctx, *, choices):
+    options = [x.strip() for x in choices.split("|") if x.strip()]
+    if len(options) < 2:
+        return await ctx.send(embed=result_embed("Choose", "Usage", f"`{PREFIX}choose option 1 | option 2`"))
+    result = random.choice(options)
+    await ctx.send(embed=result_embed("Choose", "Selected", f"**{result}**", extra=[("Options", " · ".join(f"`{x}`" for x in options[:10]))]))
 
 @bot.command()
-async def rps(ctx,choice):
-    choice=choice.lower(); options=["rock","paper","scissors"]
-    if choice not in options: return await ctx.send(embed=make_embed("rps","choose rock, paper, or scissors."))
-    botc=random.choice(options); result="tie" if choice==botc else "you win" if (choice,botc) in [("rock","scissors"),("paper","rock"),("scissors","paper")] else "you lose"
-    await ctx.send(embed=make_embed("rock paper scissors",f"you: **{choice}**\nbleeed: **{botc}**\n\n**{result}**"))
+async def rps(ctx, choice):
+    choice = choice.lower(); options = ["rock", "paper", "scissors"]
+    if choice not in options:
+        return await ctx.send(embed=result_embed("Rock Paper Scissors", "Usage", f"`{PREFIX}rps rock|paper|scissors`"))
+    botc = random.choice(options)
+    result = "tie" if choice == botc else "you win" if (choice, botc) in [("rock", "scissors"), ("paper", "rock"), ("scissors", "paper")] else "you lose"
+    await ctx.send(embed=result_embed("Rock Paper Scissors", "Result", f"**{result}**", extra=[("You", choice), ("bleeed", botc)]))
 
 @bot.command()
-async def joke(ctx): await ctx.send(embed=make_embed("joke",random.choice(["why did the computer get cold? it left its windows open.","I told my PC I needed a break. now it won't stop sending vacation ads.","what do you call a sleeping bull? a bulldozer.","why was the server cold? it left its cache open."])))
+async def joke(ctx):
+    joke_text = random.choice(["why did the computer get cold? it left its windows open.", "I told my PC I needed a break. now it won't stop sending me vacation ads.", "what do you call a sleeping bull? a bulldozer.", "why was the server cold? it left its cache open."])
+    await ctx.send(embed=result_embed("Joke", "Joke", joke_text))
 
 @bot.command()
-async def fact(ctx): await ctx.send(embed=make_embed("fact",random.choice(["octopuses have three hearts.","bananas are botanically berries.","a day on Venus is longer than its year.","honey can stay edible for a very long time when stored properly."])))
+async def fact(ctx):
+    fact_text = random.choice(["octopuses have three hearts.", "bananas are botanically berries.", "a day on Venus is longer than its year.", "honey can stay edible for a very long time when stored properly."])
+    await ctx.send(embed=result_embed("Fact", "Did you know?", fact_text))
 
 @bot.command()
-async def rate(ctx,*,thing): await ctx.send(embed=make_embed("rate",f"I'd rate **{thing}** a **{random.randint(0,100)}/100**."))
+async def rate(ctx, *, thing):
+    score = random.randint(0, 100)
+    await ctx.send(embed=result_embed("Rate", "Subject", thing, extra=[("Score", f"**{score}/100**")]))
 
 @bot.command()
-async def roast(ctx,member:discord.Member=None):
-    member=member or ctx.author; await ctx.send(embed=make_embed("roast",f"{member.mention}: you're running on the free trial of confidence."))
+async def roast(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Roast", "Target", member.mention, extra=[("Roast", "you're running on the free trial of confidence.")]))
 
 @bot.command()
-async def compliment(ctx,member:discord.Member=None):
-    member=member or ctx.author; await ctx.send(embed=make_embed("compliment",f"{member.mention} is genuinely a great person to have around."))
+async def compliment(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Compliment", "Target", member.mention, extra=[("Message", "you're genuinely a great person to have around.")]))
 
 @bot.command()
-async def wyr(ctx,*,question): await ctx.send(embed=make_embed("would you rather",question))
+async def wyr(ctx, *, question):
+    await ctx.send(embed=result_embed("Would You Rather", "Question", question))
 
 @bot.command()
-async def mock(ctx,*,text): await ctx.send(embed=make_embed("mock","".join(c.upper() if i%2 else c.lower() for i,c in enumerate(text))))
+async def mock(ctx, *, text):
+    mocked = "".join(c.upper() if i % 2 else c.lower() for i, c in enumerate(text))
+    await ctx.send(embed=result_embed("Mock", "Result", mocked))
 
 @bot.command()
-async def reverse(ctx,*,text): await ctx.send(embed=make_embed("reverse",text[::-1]))
+async def reverse(ctx, *, text):
+    await ctx.send(embed=result_embed("Reverse", "Result", text[::-1]))
 
 @bot.command()
-async def hug(ctx,member:discord.Member=None): member=member or ctx.author; await ctx.send(embed=make_embed("hug",f"{ctx.author.mention} gave {member.mention} a hug ♡"))
+async def hug(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Hug", "Action", f"{ctx.author.mention} gave {member.mention} a hug ♡"))
+
 @bot.command()
-async def pat(ctx,member:discord.Member=None): member=member or ctx.author; await ctx.send(embed=make_embed("pat",f"{ctx.author.mention} gave {member.mention} a pat ♡"))
+async def pat(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Pat", "Action", f"{ctx.author.mention} gave {member.mention} a pat ♡"))
+
 @bot.command()
-async def slap(ctx,member:discord.Member=None): member=member or ctx.author; await ctx.send(embed=make_embed("slap",f"{ctx.author.mention} bonked {member.mention} (cartoon-style)."))
+async def slap(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Slap", "Action", f"{ctx.author.mention} bonked {member.mention} (cartoon-style)."))
+
 @bot.command()
-async def love(ctx,member:discord.Member=None): member=member or ctx.author; await ctx.send(embed=make_embed("love",f"{ctx.author.mention} sent some love to {member.mention} ♡"))
+async def love(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Love", "Action", f"{ctx.author.mention} sent some love to {member.mention} ♡"))
+
 @bot.command()
-async def simp(ctx,member:discord.Member=None): member=member or ctx.author; await ctx.send(embed=make_embed("simp rate",f"{member.mention} is **{random.randint(0,100)}%** simp."))
+async def simp(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Simp Rate", "User", member.mention, extra=[("Score", f"**{random.randint(0,100)}%**")]))
+
 @bot.command()
-async def gayrate(ctx,member:discord.Member=None): member=member or ctx.author; await ctx.send(embed=make_embed("rate",f"{member.mention} got **{random.randint(0,100)}%**."))
+async def gayrate(ctx, member: discord.Member=None):
+    member = member or ctx.author
+    await ctx.send(embed=result_embed("Rate", "User", member.mention, extra=[("Score", f"**{random.randint(0,100)}%**")]))
+
 @bot.command()
-async def howlucky(ctx): await ctx.send(embed=make_embed("luck",f"your luck today is **{random.randint(0,100)}%**."))
+async def howlucky(ctx):
+    await ctx.send(embed=result_embed("Luck", "Today's luck", f"**{random.randint(0,100)}%**"))
+
 @bot.command()
-async def ship(ctx,a:discord.Member,b:discord.Member): await ctx.send(embed=make_embed("ship",f"{a.mention} × {b.mention} = **{random.randint(0,100)}%**"))
+async def ship(ctx, a: discord.Member, b: discord.Member):
+    score = random.randint(0,100)
+    await ctx.send(embed=result_embed("Ship", "Pair", f"{a.mention} × {b.mention}", extra=[("Compatibility", f"**{score}%**")]))
+
 @bot.command()
-async def shipname(ctx,a:discord.Member,b:discord.Member):
-    n=(a.display_name[:max(1,len(a.display_name)//2)]+b.display_name[max(1,len(b.display_name)//2):]).replace(" ",""); await ctx.send(embed=make_embed("ship name",f"💗 **{n}**"))
+async def shipname(ctx, a: discord.Member, b: discord.Member):
+    n = (a.display_name[:max(1, len(a.display_name)//2)] + b.display_name[max(1, len(b.display_name)//2):]).replace(" ", "")
+    await ctx.send(embed=result_embed("Ship Name", "Pair", f"{a.mention} × {b.mention}", extra=[("Name", f"**{n}**")]))
+
 @bot.command()
-async def truth(ctx): await ctx.send(embed=make_embed("truth",random.choice(["what is a hobby you wish you were better at?","what is the funniest thing you've seen today?","what game could you play for hours?"])))
+async def truth(ctx):
+    await ctx.send(embed=result_embed("Truth", "Question", random.choice(["what is a hobby you wish you were better at?", "what is the funniest thing you've seen today?", "what game could you play for hours?"])))
+
 @bot.command()
-async def dare(ctx): await ctx.send(embed=make_embed("dare",random.choice(["send a funny emoji in chat.","change your status for 5 minutes.","say something nice about the next person who messages you."])))
+async def dare(ctx):
+    await ctx.send(embed=result_embed("Dare", "Challenge", random.choice(["send a funny emoji in chat.", "change your status for 5 minutes.", "say something nice about the next person who messages you."])))
+
 @bot.command()
-async def wouldyou(ctx): await ctx.send(embed=make_embed("would you rather",random.choice(["would you rather always have perfect Wi-Fi or perfect battery life?","would you rather have unlimited games or unlimited snacks?","would you rather teleport or pause time?"])))
+async def wouldyou(ctx):
+    await ctx.send(embed=result_embed("Would You Rather", "Question", random.choice(["would you rather always have perfect Wi-Fi or perfect battery life?", "would you rather have unlimited games or unlimited snacks?", "would you rather teleport or pause time?"])))
 
 @bot.command(aliases=["afkset"])
 async def afk(ctx,*,reason="AFK"): afk_data[ctx.author.id]={"name":str(ctx.author),"reason":reason}; await ctx.send(embed=make_embed("afk",f"{ctx.author.mention} is now AFK: {reason}"))
@@ -1022,18 +1235,7 @@ async def remind(ctx, duration: str, *, message: str):
     except discord.HTTPException:
         await ctx.channel.send(ctx.author.mention, embed=make_embed("⏰ reminder", message))
 
-@bot.event
-async def on_command_error(ctx,error):
-    if isinstance(error,commands.CommandNotFound): return
-    if isinstance(error,commands.MissingRequiredArgument): return await ctx.send(embed=make_embed("missing argument",f"use `{PREFIX}help {ctx.command.qualified_name}` to see the correct usage."))
-    if isinstance(error,commands.BadArgument): return await ctx.send(embed=make_embed("invalid argument",f"use `{PREFIX}help {ctx.command.qualified_name}` for usage."))
-    if isinstance(error,commands.CommandInvokeError):
-        print(f"Command error: {error.original}"); return await ctx.send(embed=make_embed("error","something went wrong while running that command."))
-    print(f"Command error: {error}")
-
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
 
 bot.run(TOKEN)
-
-client.run(os.getenv("DISCORD_TOKEN"))
