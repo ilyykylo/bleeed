@@ -37,21 +37,13 @@ giveaways = {}
 reminders = {}
 
 
-def make_embed(title=None, description=None, *, footer=True, timestamp=True, ctx=None, icon=True):
-    """Shared BLEEED-style embed: compact, structured, and consistent."""
+def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
+    """Shared compact embed style. No automatic author, footer, or timestamp."""
     e = discord.Embed(color=COLOR)
     if title:
-        e.title = f"## {title}"
+        e.title = title
     if description:
         e.description = description
-    if ctx and getattr(ctx, "guild", None) and icon and ctx.guild.icon:
-        e.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url)
-    elif icon:
-        e.set_author(name="bleeed")
-    if timestamp:
-        e.timestamp = discord.utils.utcnow()
-    if footer:
-        e.set_footer(text="bleeed · clean, fast, simple")
     return e
 
 def info_embed(ctx, title, fields, *, thumbnail=True):
@@ -185,7 +177,7 @@ def build_pages():
     for group in page_groups:
         blocks = []
         for title in group:
-            blocks.append(f"### {title}\n" + " ".join(command_text(name) for name in lookup[title]))
+            blocks.append(f"# {title}\n" + " ".join(command_text(name) for name in lookup[title]))
         pages.append("\n\n".join(blocks))
     return pages
 
@@ -519,13 +511,13 @@ async def roles(ctx):
     if role_list and role_list[-1].is_default():
         role_list.pop()
     if not role_list:
-        return await ctx.send(embed=make_embed(None, f"## Roles in {ctx.guild.name}\nno roles found.", footer=False, timestamp=False))
+        return await ctx.send(embed=make_embed(None, f"# Roles in {ctx.guild.name}\nno roles found.", footer=False, timestamp=False))
 
     pages = []
     total_pages = (len(role_list) + 9) // 10
     for page_index in range(total_pages):
         chunk = role_list[page_index * 10:(page_index + 1) * 10]
-        lines = [f"## Roles in {ctx.guild.name}"]
+        lines = [f"# Roles in {ctx.guild.name}"]
         for offset, role in enumerate(chunk, start=page_index * 10 + 1):
             lines.append(f"`{offset:02d}` **{role.mention}** · `{role.id}`")
         lines.append(f"-# Page {page_index + 1}/{total_pages}")
@@ -906,7 +898,6 @@ async def giveaway(ctx, duration: str, winners: int, *, prize: str):
 async def announce(ctx, *, message):
     """Send a server announcement embed."""
     e = make_embed("📢 announcement", message)
-    e.set_footer(text=f"announced by {ctx.author}")
     await ctx.send(embed=e)
 
 
