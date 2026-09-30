@@ -37,8 +37,30 @@ giveaways = {}
 reminders = {}
 
 
-def make_embed(title=None, description=None):
-    return discord.Embed(title=title, description=description, color=COLOR)
+def make_embed(title=None, description=None, *, footer=True, timestamp=True, ctx=None, icon=True):
+    """Shared BLEEED-style embed: compact, structured, and consistent."""
+    e = discord.Embed(color=COLOR)
+    if title:
+        e.title = f"## {title}"
+    if description:
+        e.description = description
+    if ctx and getattr(ctx, "guild", None) and icon and ctx.guild.icon:
+        e.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url)
+    elif icon:
+        e.set_author(name="bleeed")
+    if timestamp:
+        e.timestamp = discord.utils.utcnow()
+    if footer:
+        e.set_footer(text="bleeed · clean, fast, simple")
+    return e
+
+def info_embed(ctx, title, fields, *, thumbnail=True):
+    e = make_embed(title, ctx=ctx)
+    for name, value, inline in fields:
+        e.add_field(name=name, value=value, inline=inline)
+    if thumbnail and getattr(ctx.guild, "icon", None):
+        e.set_thumbnail(url=ctx.guild.icon.url)
+    return e
 
 
 def role_ok(member, role_ids):
@@ -135,12 +157,16 @@ COMMAND_INFO = {
     "nick": ("Change a member's nickname.", "nick <member> [nickname]", "nick @user New Name", []),
     "addrole": ("Give a role to a member.", "addrole <member> <role>", "addrole @user @VIP", []),
     "removerole": ("Remove a role from a member.", "removerole <member> <role>", "removerole @user @VIP", []),
+    "create": ("Create a server role, text channel, or voice channel.", "create <role|channel|vc> <name>", "create role VIP", []),
+    "create role": ("Create a new server role.", "create role <name>", "create role VIP", []),
+    "create channel": ("Create a new text channel.", "create channel <name>", "create channel general", []),
+    "create vc": ("Create a new voice channel.", "create vc <name>", "create vc Gaming", ["create voice"]),
     "remind": ("Create a personal reminder.", "remind <duration> <message>", "remind 30m check chat", []),
 }
 
 CATEGORIES = [
     ("Information", ["afk", "avatar", "banner", "botinfo", "channelinfo", "commands", "emojis", "guildicon", "help", "membercount", "permissions", "roleinfo", "roles", "serverinfo", "stickers", "userinfo"]),
-    ("Server", ["ar", "autorole", "autoreact", "booster", "boosterremove", "boost", "filter", "welcome", "disablewelcome", "poll", "ticket", "close", "giveaway", "gaw", "announce", "remind"]),
+    ("Server", ["ar", "autorole", "autoreact", "booster", "boosterremove", "boost", "filter", "welcome", "disablewelcome", "poll", "ticket", "close", "giveaway", "gaw", "announce", "create", "remind"]),
     ("Security", ["antinuke", "antiraid", "security"]),
     ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "addrole", "removerole"]),
     ("Fun", ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "wyr", "mock", "reverse", "truth", "dare", "wouldyou"]),
@@ -371,26 +397,77 @@ async def banner(ctx, member: discord.Member=None):
     e=make_embed(f"{member.display_name}'s banner"); e.set_image(url=user.banner.url); await ctx.send(embed=e)
 
 @bot.command()
-async def botinfo(ctx): await ctx.send(embed=make_embed("bleeed", f"**prefix:** `{PREFIX}`\n**library:** discord.py\n**servers:** `{len(bot.guilds)}`\n**latency:** `{round(bot.latency*1000)}ms`"))
+async def botinfo(ctx):
+    e = info_embed(ctx, "Bot Information", [
+        ("Prefix", f"`{PREFIX}`", True),
+        ("Library", "`discord.py`", True),
+        ("Servers", f"`{len(bot.guilds)}`", True),
+        ("Latency", f"`{round(bot.latency * 1000)}ms`", True),
+        ("Uptime", f"<t:{int(start_time)}:R>", True),
+        ("Commands", f"`{len(bot.commands)}`", True),
+    ])
+    await ctx.send(embed=e)
 
 @bot.command(aliases=["ui"])
 async def userinfo(ctx, member: discord.Member=None):
-    member=member or ctx.author; roles=", ".join(r.mention for r in member.roles[1:]) or "none"; joined=f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "unknown"
-    e=make_embed("user info", f"**user:** {fmt_user(member)}\n**joined:** {joined}\n**created:** <t:{int(member.created_at.timestamp())}:R>\n**roles:** {roles}"); e.set_thumbnail(url=member.display_avatar.url); await ctx.send(embed=e)
+    member = member or ctx.author
+    roles = ", ".join(r.mention for r in member.roles[1:]) or "none"
+    joined = f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "unknown"
+    e = info_embed(ctx, "User Information", [
+        ("User", f"{member.mention} · `{member.id}`", False),
+        ("Created", f"<t:{int(member.created_at.timestamp())}:F>\n<t:{int(member.created_at.timestamp())}:R>", True),
+        ("Joined", f"{joined}", True),
+        ("Roles", roles, False),
+    ], thumbnail=False)
+    e.set_thumbnail(url=member.display_avatar.url)
+    await ctx.send(embed=e)
 
 @bot.command(aliases=["si"])
 async def serverinfo(ctx):
-    g=ctx.guild; await ctx.send(embed=make_embed("server info", f"**name:** {g.name}\n**id:** `{g.id}`\n**owner:** <@{g.owner_id}>\n**members:** `{g.member_count}`\n**channels:** `{len(g.channels)}`\n**roles:** `{len(g.roles)}`\n**created:** <t:{int(g.created_at.timestamp())}:R>"))
+    g = ctx.guild
+    e = info_embed(ctx, "Server Information", [
+        ("Server", f"**{g.name}**\n`{g.id}`", False),
+        ("Owner", f"<@{g.owner_id}>", True),
+        ("Members", f"`{g.member_count}`", True),
+        ("Channels", f"`{len(g.channels)}`", True),
+        ("Roles", f"`{len(g.roles)}`", True),
+        ("Created", f"<t:{int(g.created_at.timestamp())}:R>", True),
+    ])
+    await ctx.send(embed=e)
 
 @bot.command()
 async def channelinfo(ctx, channel: discord.TextChannel=None):
-    c=channel or ctx.channel; await ctx.send(embed=make_embed("channel info", f"**name:** {c.mention}\n**id:** `{c.id}`\n**type:** `{c.type}`\n**created:** <t:{int(c.created_at.timestamp())}:R>"))
+    c = channel or ctx.channel
+    e = info_embed(ctx, "Channel Information", [
+        ("Channel", f"{c.mention} · `{c.id}`", False),
+        ("Type", f"`{c.type}`", True),
+        ("Position", f"`{c.position}`", True),
+        ("Created", f"<t:{int(c.created_at.timestamp())}:R>", False),
+    ])
+    await ctx.send(embed=e)
 
 @bot.command()
-async def roleinfo(ctx, role: discord.Role): await ctx.send(embed=make_embed("role info", f"**role:** {role.mention}\n**id:** `{role.id}`\n**members:** `{len(role.members)}`\n**position:** `{role.position}`\n**created:** <t:{int(role.created_at.timestamp())}:R>"))
+async def roleinfo(ctx, role: discord.Role):
+    e = info_embed(ctx, "Role Information", [
+        ("Role", f"{role.mention} · `{role.id}`", False),
+        ("Members", f"`{len(role.members)}`", True),
+        ("Position", f"`{role.position}`", True),
+        ("Color", f"`{role.color}`", True),
+        ("Created", f"<t:{int(role.created_at.timestamp())}:R>", True),
+    ])
+    await ctx.send(embed=e)
 
 @bot.command()
-async def membercount(ctx): await ctx.send(embed=make_embed("member count", f"**{ctx.guild.member_count}** members"))
+async def membercount(ctx):
+    g = ctx.guild
+    humans = sum(not m.bot for m in g.members)
+    bots = g.member_count - humans
+    e = info_embed(ctx, "Member Count", [
+        ("Total", f"`{g.member_count}`", True),
+        ("Humans", f"`{humans}`", True),
+        ("Bots", f"`{bots}`", True),
+    ])
+    await ctx.send(embed=e)
 
 class RolesView(discord.ui.View):
     def __init__(self, pages, author_id, guild_name):
@@ -407,7 +484,7 @@ class RolesView(discord.ui.View):
         self.page.label = f"Page {self.index + 1}/{len(self.pages)}"
 
     def embed(self):
-        return make_embed(None, self.pages[self.index])
+        return make_embed(None, self.pages[self.index], footer=False, timestamp=False)
 
     async def check_user(self, interaction):
         if interaction.user.id != self.author_id and not interaction.user.guild_permissions.manage_guild:
@@ -442,7 +519,7 @@ async def roles(ctx):
     if role_list and role_list[-1].is_default():
         role_list.pop()
     if not role_list:
-        return await ctx.send(embed=make_embed(None, f"## Roles in {ctx.guild.name}\nno roles found."))
+        return await ctx.send(embed=make_embed(None, f"## Roles in {ctx.guild.name}\nno roles found.", footer=False, timestamp=False))
 
     pages = []
     total_pages = (len(role_list) + 9) // 10
@@ -473,7 +550,14 @@ async def guildicon(ctx):
     e=make_embed("server icon"); e.set_image(url=ctx.guild.icon.url if ctx.guild.icon else discord.Embed.Empty); await ctx.send(embed=e)
 
 @bot.command()
-async def boost(ctx): await ctx.send(embed=make_embed("boosts", f"**{ctx.guild.premium_subscription_count or 0}** boosts • level **{ctx.guild.premium_tier}**"))
+async def boost(ctx):
+    g = ctx.guild
+    e = info_embed(ctx, "Server Boosts", [
+        ("Boosts", f"`{g.premium_subscription_count or 0}`", True),
+        ("Level", f"`{g.premium_tier}`", True),
+        ("Boosters", f"`{len(g.premium_subscribers)}`", True),
+    ])
+    await ctx.send(embed=e)
 
 @bot.command()
 async def welcome(ctx, channel: discord.TextChannel=None):
@@ -864,6 +948,72 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
         return await ctx.send(embed=make_embed("error", "that role is too high for you or the bot."))
     await member.remove_roles(role, reason=f"role removed by {ctx.author}")
     await ctx.send(embed=make_embed("role removed", f"removed {role.mention} from {member.mention}."))
+
+
+@bot.hybrid_group(name="create", invoke_without_command=True)
+@commands.has_permissions(manage_channels=True)
+async def create(ctx):
+    """Create a server role, text channel, or voice channel."""
+    await ctx.send(embed=make_embed(
+        "create",
+        f"**server setup**\n\n"
+        f"`{PREFIX}create role <name>` — create a role\n"
+        f"`{PREFIX}create channel <name>` — create a text channel\n"
+        f"`{PREFIX}create vc <name>` — create a voice channel\n\n"
+        f"Slash commands: `/create role`, `/create channel`, `/create vc`"
+    ))
+
+
+@create.command(name="role")
+@commands.has_permissions(manage_roles=True)
+async def create_role(ctx, *, name: str):
+    """Create a new server role."""
+    name = name.strip()
+    if not name:
+        return await ctx.send(embed=make_embed("create role", "role name cannot be empty."))
+    if len(name) > 100:
+        return await ctx.send(embed=make_embed("create role", "role names can be up to 100 characters."))
+    role = await ctx.guild.create_role(name=name, reason=f"role created by {ctx.author}")
+    e = make_embed(
+        "role created",
+        f"**name:** {role.mention}\n**id:** `{role.id}`\n**created by:** {ctx.author.mention}"
+    )
+    e.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else discord.Embed.Empty)
+    await ctx.send(embed=e)
+
+
+@create.command(name="channel")
+@commands.has_permissions(manage_channels=True)
+async def create_channel(ctx, *, name: str):
+    """Create a new text channel."""
+    name = name.strip()
+    if not name:
+        return await ctx.send(embed=make_embed("create channel", "channel name cannot be empty."))
+    if len(name) > 100:
+        return await ctx.send(embed=make_embed("create channel", "channel names can be up to 100 characters."))
+    channel = await ctx.guild.create_text_channel(name, reason=f"channel created by {ctx.author}")
+    e = make_embed(
+        "channel created",
+        f"**channel:** {channel.mention}\n**id:** `{channel.id}`\n**created by:** {ctx.author.mention}"
+    )
+    await ctx.send(embed=e)
+
+
+@create.command(name="vc", aliases=["voice"])
+@commands.has_permissions(manage_channels=True)
+async def create_vc(ctx, *, name: str):
+    """Create a new voice channel."""
+    name = name.strip()
+    if not name:
+        return await ctx.send(embed=make_embed("create voice", "voice channel name cannot be empty."))
+    if len(name) > 100:
+        return await ctx.send(embed=make_embed("create voice", "channel names can be up to 100 characters."))
+    channel = await ctx.guild.create_voice_channel(name, reason=f"voice channel created by {ctx.author}")
+    e = make_embed(
+        "voice channel created",
+        f"**channel:** {channel.mention}\n**id:** `{channel.id}`\n**created by:** {ctx.author.mention}"
+    )
+    await ctx.send(embed=e)
 
 
 @bot.hybrid_command(name="remind")
