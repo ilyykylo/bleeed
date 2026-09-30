@@ -181,16 +181,6 @@ async def timeout(ctx, member: discord.Member, minutes: int = 10, *, reason="no 
     await ctx.send(embed=embed("member muted", f"{member.mention} was muted for **{minutes}m**.\nreason: {reason}"))
 
 
-@bot.command(aliases=["ub"])
-async def unban(ctx, user_id: int):
-    if not role_ok(ctx.author, {BAN_ROLE}): return await ctx.send(embed=embed("no permission", "you don't have the required ban role."))
-    try:
-        await ctx.guild.unban(discord.Object(id=user_id))
-        await ctx.send(embed=embed("member unbanned", f"`{user_id}` was unbanned."))
-    except discord.NotFound:
-        await ctx.send(embed=embed("error", "that user isn't banned or the ID is invalid."))
-
-
 @bot.command(aliases=["k"])
 async def kick(ctx, member: discord.Member, *, reason="no reason provided"):
     if not role_ok(ctx.author, KICK_ROLES): return await ctx.send(embed=embed("no permission", "you don't have the required kick role."))
