@@ -256,14 +256,12 @@ async def purge(ctx, amount: int = 10):
 
 
 @bot.command(aliases=["l"])
-@commands.has_permissions(manage_channels=True)
 async def lock(ctx):
     await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
     await ctx.send(embed=embed("locked", f"{ctx.channel.mention} is now locked."))
 
 
 @bot.command(aliases=["ul"])
-@commands.has_permissions(manage_channels=True)
 async def unlock(ctx):
     await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=None)
     await ctx.send(embed=embed("unlocked", f"{ctx.channel.mention} is now unlocked."))
