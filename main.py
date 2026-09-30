@@ -420,3 +420,5 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
 
 bot.run(TOKEN)
+
+client.login(process.env.DISCORD_TOKEN
