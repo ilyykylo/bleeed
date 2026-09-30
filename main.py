@@ -38,18 +38,20 @@ reminders = {}
 
 
 def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
-    """Shared compact embed style. No automatic author, footer, or timestamp."""
+    """Minimalist Greed-inspired visual system with original BLEEED layouts."""
     e = discord.Embed(color=COLOR)
     if title:
-        e.title = title
-    if description:
+        heading = f"# {title}"
+        e.description = heading if not description else f"{heading}\n{description}"
+    elif description:
         e.description = description
     return e
 
 def info_embed(ctx, title, fields, *, thumbnail=True):
     e = make_embed(title, ctx=ctx)
     for name, value, inline in fields:
-        e.add_field(name=name, value=value, inline=inline)
+        # Keep field labels short and structured; Discord renders markdown in fields.
+        e.add_field(name=f"**{name}**", value=value, inline=inline)
     if thumbnail and getattr(ctx.guild, "icon", None):
         e.set_thumbnail(url=ctx.guild.icon.url)
     return e
