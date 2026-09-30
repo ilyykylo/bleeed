@@ -403,7 +403,11 @@ async def on_command_error(ctx, error):
     raise error
 
 
-if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
+token = os.getenv("DISCORD_TOKEN")
 
-bot.run(TOKEN)
+if not token:
+    raise RuntimeError("DISCORD_TOKEN is not set")
+
+bot.run(token)
+
+
