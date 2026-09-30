@@ -124,8 +124,8 @@ async def help(ctx, command_name: str = None):
     await ctx.send(embed=e)
 
 
-@bot.command(aliases=["cmd"])
-async def commands(ctx):
+@bot.command(name="commands", aliases=["cmd"])
+async def command_list(ctx):
     groups = {
         "moderation": ["ban", "unban", "kick", "mute", "warn", "warnings", "purge", "lock", "unlock", "snipe"],
         "utility": ["ping", "uptime", "avatar", "userinfo", "serverinfo", "poll", "afk", "welcome", "disablewelcome", "booster"],
