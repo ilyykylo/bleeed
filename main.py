@@ -181,14 +181,6 @@ async def timeout(ctx, member: discord.Member, minutes: int = 10, *, reason="no 
     await ctx.send(embed=embed("member muted", f"{member.mention} was muted for **{minutes}m**.\nreason: {reason}"))
 
 
-@bot.command(aliases=["b"])
-async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
-    if not role_ok(ctx.author, {BAN_ROLE}): return await ctx.send(embed=embed("no permission", "you don't have the required ban role."))
-    if not target_ok(ctx, member): return await ctx.send(embed=embed("error", "you can't ban that member."))
-    await member.ban(reason=reason)
-    await ctx.send(embed=embed("member banned", f"**{member}** was banned.\nreason: {reason}"))
-
-
 @bot.command(aliases=["ub"])
 async def unban(ctx, user_id: int):
     if not role_ok(ctx.author, {BAN_ROLE}): return await ctx.send(embed=embed("no permission", "you don't have the required ban role."))
