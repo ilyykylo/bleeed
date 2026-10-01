@@ -1055,7 +1055,10 @@ async def permissions(ctx, member: discord.Member=None):
 
 @bot.command()
 async def guildicon(ctx):
-    e=make_embed("server icon"); e.set_image(url=ctx.guild.icon.url if ctx.guild.icon else discord.Embed.Empty); await ctx.send(embed=e)
+    e=make_embed("server icon")
+    if ctx.guild.icon:
+        e.set_image(url=ctx.guild.icon.url)
+    await ctx.send(embed=e)
 
 @bot.command()
 async def boost(ctx):
@@ -1744,7 +1747,8 @@ async def create_role(ctx, *, name: str):
         "role created",
         f"**name:** {role.mention}\n**id:** `{role.id}`\n**created by:** {ctx.author.mention}"
     )
-    e.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else discord.Embed.Empty)
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
     await ctx.send(embed=e)
 
 
