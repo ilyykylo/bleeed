@@ -227,67 +227,91 @@ async def _quote_data(message):
 
 
 def _render_quote_frame(data, motion=0.0):
-    """Render the quote card in the style of the supplied reference."""
+    """Render the quote card to closely match the supplied 1200x600 reference."""
     width, height = 1200, 600
-    left_width = 500
+    left_width = 588
     right_width = width - left_width
-    image = Image.new("RGB", (width, height), (8, 10, 13))
 
-    # Left visual: attachment if available, otherwise the user's avatar.
+    # The reference is a hard split: grayscale image on the left, almost-black
+    # quote panel on the right. No rounded card, no title, and no UI labels.
+    image = Image.new("RGB", (width, height), (3, 6, 9))
+
     visual = data["visual"]
     if visual is None:
-        visual = Image.new("RGB", (left_width, height), (28, 29, 33))
+        visual = Image.new("RGB", (left_width, height), (38, 39, 42))
     else:
-        # Subtle zoom/pan is what makes the GIF version feel alive.
-        zoom = 1.0 + abs(motion) * 0.035
-        scaled = visual.resize((max(left_width, int(visual.width * zoom)), max(height, int(visual.height * zoom))), Image.Resampling.LANCZOS)
-        visual = _fit_cover(scaled, (left_width, height))
+        # Animate only the source image for GIF mode, keeping the composition fixed.
+        zoom = 1.0 + abs(motion) * 0.045
+        scaled_w = max(left_width, int(visual.width * zoom))
+        scaled_h = max(height, int(visual.height * zoom))
+        visual = visual.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+        visual = _fit_cover(visual, (left_width, height))
         visual = visual.convert("L").convert("RGB")
+        # Match the slightly washed/low-contrast monochrome look in the example.
+        visual = Image.eval(visual, lambda px: max(0, min(255, int(128 + (px - 128) * 0.82))))
+
+    # Tiny horizontal movement for the GIF, with the same full-height crop.
+    if motion and visual.width == left_width:
+        pass
     image.paste(visual, (0, 0))
 
-    # Soft divider between the visual and quote side.
+    # Near-black right panel, matching the reference split.
     draw = ImageDraw.Draw(image)
-    draw.rectangle((left_width - 2, 0, left_width + 2, height), fill=(12, 13, 16))
+    draw.rectangle((left_width, 0, width, height), fill=(3, 6, 9))
 
-    # Right side, close to the reference: centered white text on near-black.
-    right_x = left_width + 45
-    right_pad = 50
-    quote_font = _quote_font(43, False)
-    author_font = _quote_font(26, False)
-    name_font = _quote_font(30, True)
-    quote_lines = _wrap_quote(draw, data["text"], quote_font, right_width - right_pad * 2)
-    line_height = 55
-    total_text_h = len(quote_lines) * line_height
-    start_y = max(105, (height - total_text_h) // 2 - 25)
+    # Reference-like typography: large centered white quote, then italic name
+    # and smaller gray handle beneath it.
+    quote_font = _quote_font(45, False)
+    name_font = _quote_font(25, False)
+    handle_font = _quote_font(20, False)
+    watermark_font = _quote_font(16, False)
 
-    # Tiny quotation mark, not a label.
-    draw.text((right_x, 52), "“", font=_quote_font(74, True), fill=(238, 238, 240))
+    quote_lines = _wrap_quote(draw, data["text"], quote_font, 500)
+    line_height = 52
+    total_h = len(quote_lines) * line_height
+    quote_start = max(115, int((height - total_h) / 2) - 25)
 
-    y = start_y
+    # Center every line as in the reference. No quotation marks or labels.
+    y = quote_start
     for line in quote_lines:
         bbox = draw.textbbox((0, 0), line, font=quote_font)
         line_w = bbox[2] - bbox[0]
         x = left_width + (right_width - line_w) / 2
-        # A tiny motion offset is used only by the GIF version.
-        x += motion * 1.5
-        draw.text((x, y), line, font=quote_font, fill=(244, 244, 246))
+        x += motion * 0.8
+        draw.text((x, y), line, font=quote_font, fill=(247, 247, 248))
         y += line_height
 
-    # Person who said it: actual name + username, no "user:"/"pfp:" labels.
-    author_y = min(height - 120, y + 28)
-    name = data["display_name"]
+    # Name/username are deliberately plain: the message author is represented
+    # by the actual values, not by literal "user", "pfp", etc.
+    display_name = data["display_name"]
     handle = f"@{data['username']}"
-    name_box = draw.textbbox((0, 0), name, font=name_font)
-    handle_box = draw.textbbox((0, 0), handle, font=author_font)
-    name_x = left_width + (right_width - (name_box[2] - name_box[0])) / 2
-    handle_x = left_width + (right_width - (handle_box[2] - handle_box[0])) / 2
-    draw.text((name_x, author_y), name, font=name_font, fill=(242, 242, 244))
-    draw.text((handle_x, author_y + 38), handle, font=author_font, fill=(145, 147, 153))
+    name_bbox = draw.textbbox((0, 0), display_name, font=name_font)
+    handle_bbox = draw.textbbox((0, 0), handle, font=handle_font)
+    name_w = name_bbox[2] - name_bbox[0]
+    handle_w = handle_bbox[2] - handle_bbox[0]
+    author_y = min(390, y + 28)
+    draw.text(
+        (left_width + (right_width - name_w) / 2, author_y),
+        display_name,
+        font=name_font,
+        fill=(224, 224, 226),
+    )
+    draw.text(
+        (left_width + (right_width - handle_w) / 2, author_y + 32),
+        handle,
+        font=handle_font,
+        fill=(120, 122, 126),
+    )
 
-    # Small watermark in the same unobtrusive place as the example.
+    # Small creator/bot watermark in the same bottom-right position as the example.
     watermark = f"bleeed • {data['server']}"
-    wb = draw.textbbox((0, 0), watermark, font=author_font)
-    draw.text((width - 30 - (wb[2] - wb[0]), height - 43), watermark, font=author_font, fill=(100, 102, 108))
+    wb = draw.textbbox((0, 0), watermark, font=watermark_font)
+    draw.text(
+        (width - 20 - (wb[2] - wb[0]), height - 30),
+        watermark,
+        font=watermark_font,
+        fill=(105, 107, 111),
+    )
     return image
 
 
