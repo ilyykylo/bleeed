@@ -1,6 +1,6 @@
 import os, time, random, asyncio, json, re
 from collections import defaultdict, deque
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 import discord
 from discord.ext import commands
 from io import BytesIO
@@ -662,8 +662,20 @@ async def on_member_update(before, after):
 
 @bot.event
 async def on_message_delete(message):
-    if not message.author.bot:
-        bot._last_deleted = (message.author, message.content, message.channel, time.time())
+    if not message.author.bot and message.guild:
+        if not hasattr(bot, "_snipes"):
+            bot._snipes = defaultdict(lambda: deque(maxlen=100))
+        attachments = [a.url for a in message.attachments]
+        bot._snipes[message.channel.id].appendleft({
+            "author_id": message.author.id,
+            "author_name": message.author.display_name,
+            "author_tag": str(message.author),
+            "content": message.content or "",
+            "attachments": attachments,
+            "created_at": message.created_at.timestamp() if message.created_at else time.time(),
+            "deleted_at": time.time(),
+            "message_id": message.id,
+        })
 
 
 async def audit_actor(guild, action):
@@ -1370,25 +1382,113 @@ async def purge(ctx,amount:int=10):
 
 @bot.command(aliases=["l"])
 async def lock(ctx):
-    if not role_ok(ctx.author,PURGE_ROLES): return await ctx.send(embed=make_embed("no permission", "you need the configured moderation role or Administrator."))
-    if not bot_can(ctx, "manage_channels"): return await ctx.send(embed=make_embed("bot permission missing", "I need **Manage Channels** permission to lock this channel."))
-    try: await ctx.channel.set_permissions(ctx.guild.default_role,send_messages=False)
-    except discord.Forbidden: return await ctx.send(embed=make_embed("lock failed", "Discord denied the action. Check my **Manage Channels** permission."))
-    await ctx.send(embed=result_embed("Channel Locked", "Channel", ctx.channel.mention, extra=[("Moderator", ctx.author.mention)]))
+    # Lock/unlock are intentionally silent for users without moderation access.
+    if not role_ok(ctx.author, PURGE_ROLES):
+        return
+    if not bot_can(ctx, "manage_channels"):
+        return
+    try:
+        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
+    except (discord.Forbidden, discord.HTTPException):
+        return
+    try:
+        await ctx.message.add_reaction("🔒")
+    except discord.HTTPException:
+        pass
 
 @bot.command(aliases=["ul"])
 async def unlock(ctx):
-    if not role_ok(ctx.author,PURGE_ROLES): return await ctx.send(embed=make_embed("no permission", "you need the configured moderation role or Administrator."))
-    if not bot_can(ctx, "manage_channels"): return await ctx.send(embed=make_embed("bot permission missing", "I need **Manage Channels** permission to unlock this channel."))
-    try: await ctx.channel.set_permissions(ctx.guild.default_role,send_messages=None)
-    except discord.Forbidden: return await ctx.send(embed=make_embed("unlock failed", "Discord denied the action. Check my **Manage Channels** permission."))
-    await ctx.send(embed=result_embed("Channel Unlocked", "Channel", ctx.channel.mention, extra=[("Moderator", ctx.author.mention)]))
+    # Lock/unlock are intentionally silent for users without moderation access.
+    if not role_ok(ctx.author, PURGE_ROLES):
+        return
+    if not bot_can(ctx, "manage_channels"):
+        return
+    try:
+        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=None)
+    except (discord.Forbidden, discord.HTTPException):
+        return
+    try:
+        await ctx.message.add_reaction("🔓")
+    except discord.HTTPException:
+        pass
+
+class SnipeView(discord.ui.View):
+    def __init__(self, entries, author_id):
+        super().__init__(timeout=120)
+        self.entries = entries
+        self.index = 0
+        self.author_id = author_id
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.previous.disabled = self.index == 0
+        self.next.disabled = self.index == len(self.entries) - 1
+        self.page.label = f"Page {self.index + 1}/{len(self.entries)}"
+
+    def embed(self):
+        item = self.entries[self.index]
+        author = item["author_name"]
+        content = item["content"] or "[no text]"
+        if len(content) > 1500:
+            content = content[:1497] + "..."
+        lines = [f"# Sniped Message", "", f"**{author}** · `{item['author_tag']}`", "", content, "", f"**Deleted**\n<t:{int(item['deleted_at'])}:F> · <t:{int(item['deleted_at'])}:R>"]
+        if item["attachments"]:
+            lines.extend(["", "**Attachments**", *[url for url in item["attachments"][:3]]])
+        return make_embed(None, "\n".join(lines), footer=False, timestamp=False)
+
+    async def check_user(self, interaction):
+        if interaction.user.id != self.author_id and not interaction.user.guild_permissions.manage_messages:
+            await interaction.response.send_message("only the command author or staff can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="‹", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.check_user(interaction):
+            return
+        self.index -= 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Page 1/1", style=discord.ButtonStyle.secondary, disabled=True)
+    async def page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="›", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.check_user(interaction):
+            return
+        self.index += 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+@bot.command(aliases=["cs"])
+async def clearsnipes(ctx):
+    # Only the same moderation roles used by warn/mute/kick/ban can clear snipes.
+    if not role_ok(ctx.author, WARN_ROLES | MUTE_ROLES | KICK_ROLES | {BAN_ROLE}):
+        return
+    if not hasattr(bot, "_snipes"):
+        bot._snipes = defaultdict(lambda: deque(maxlen=100))
+    bot._snipes[ctx.channel.id].clear()
+    try:
+        await ctx.message.add_reaction("✅")
+    except discord.HTTPException:
+        pass
 
 @bot.command(aliases=["s"])
 async def snipe(ctx):
-    d=getattr(bot,"_last_deleted",None)
-    if not d or d[2].id!=ctx.channel.id or time.time()-d[3]>60: return await ctx.send(embed=make_embed("snipe","nothing to snipe here."))
-    await ctx.send(embed=make_embed("sniped message",f"**{d[0]}:** {d[1] or '[no text]'}"))
+    snipes = getattr(bot, "_snipes", {}).get(ctx.channel.id, [])
+    now = time.time()
+    entries = [x for x in snipes if now - x["deleted_at"] <= 3600]
+    if not entries:
+        return await ctx.send(embed=make_embed("snipe", "nothing to snipe here from the last hour."))
+    # Drop expired entries from the in-memory history.
+    try:
+        bot._snipes[ctx.channel.id] = deque(entries, maxlen=100)
+    except Exception:
+        pass
+    view = SnipeView(entries, ctx.author.id)
+    await ctx.send(embed=view.embed(), view=view)
 
 @bot.command()
 async def antinuke(ctx, action="status", value=None):
