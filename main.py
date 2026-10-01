@@ -1,8 +1,14 @@
-import os, time, random, asyncio
+import os, time, random, asyncio, json, re
 from collections import defaultdict, deque
 from datetime import timedelta
 import discord
 from discord.ext import commands
+from io import BytesIO
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = ImageDraw = ImageFont = None
 
 PREFIX = ","
 COLOR = 0x000001
@@ -23,6 +29,198 @@ start_time = time.time()
 warning_data = defaultdict(lambda: defaultdict(list))
 afk_data = {}
 welcome_channels = {}
+welcome_config = defaultdict(lambda: {
+    "enabled": False,
+    "channel": None,
+    "title": "Welcome to {server}!",
+    "description": "welcome {user} to **{server}**!\n\nmember **#{membercount}**",
+    "color": "#000001",
+    "image": None,
+    "thumbnail": "{user_avatar}",
+})
+WELCOME_CONFIG_FILE = "welcome_config.json"
+
+def load_welcome_config():
+    global welcome_config
+    try:
+        with open(WELCOME_CONFIG_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for gid, cfg in raw.items():
+            base = dict(welcome_config[int(gid)])
+            base.update(cfg)
+            welcome_config[int(gid)] = base
+            if base.get("channel"):
+                welcome_channels[int(gid)] = int(base["channel"])
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
+
+def save_welcome_config():
+    try:
+        with open(WELCOME_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): dict(v) for k, v in welcome_config.items()}, f, indent=2)
+    except OSError as exc:
+        print(f"welcome config save failed: {exc}")
+
+def get_welcome_config(guild_id):
+    return welcome_config[guild_id]
+
+def welcome_replace(text, member):
+    replacements = {
+        "{user}": member.mention,
+        "{mention}": member.mention,
+        "{username}": member.name,
+        "{displayname}": member.display_name,
+        "{server}": member.guild.name,
+        "{membercount}": str(member.guild.member_count or len(member.guild.members)),
+        "{id}": str(member.id),
+        "{user_id}": str(member.id),
+    }
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    return text
+
+def parse_color(value):
+    value = value.strip().lower().replace("0x", "#")
+    if not value.startswith("#"):
+        value = "#" + value
+    if not re.fullmatch(r"#[0-9a-f]{6}", value):
+        return None
+    return int(value[1:], 16)
+
+def build_welcome_embed(member):
+    cfg = get_welcome_config(member.guild.id)
+    color = parse_color(cfg.get("color", "#000001")) or COLOR
+    e = discord.Embed(
+        title=welcome_replace(cfg.get("title", "Welcome to {server}!"), member),
+        description=welcome_replace(cfg.get("description", "welcome {user} to **{server}**!"), member),
+        color=color,
+    )
+    image = cfg.get("image")
+    thumbnail = cfg.get("thumbnail")
+    if image:
+        e.set_image(url=welcome_replace(image, member))
+    if thumbnail:
+        thumb_url = member.display_avatar.url if thumbnail == "{user_avatar}" else welcome_replace(thumbnail, member)
+        e.set_thumbnail(url=thumb_url)
+    return e
+
+load_welcome_config()
+
+
+QUOTE_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+]
+QUOTE_BOLD_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+]
+
+
+def _quote_font(size, bold=False):
+    if ImageFont is None:
+        return None
+    paths = QUOTE_BOLD_PATHS if bold else QUOTE_FONT_PATHS
+    for path in paths:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def _wrap_quote(draw, text, font, max_width):
+    words = text.split()
+    if not words:
+        return [""]
+    lines, current = [], ""
+    for word in words:
+        test = word if not current else current + " " + word
+        if draw.textbbox((0, 0), test, font=font)[2] <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            # Break very long unbroken words safely.
+            current = word
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+async def make_quote_image(message):
+    if Image is None:
+        raise RuntimeError("Pillow is not installed")
+
+    width = 1200
+    padding = 70
+    avatar_size = 110
+    username_font = _quote_font(42, True)
+    handle_font = _quote_font(28, False)
+    quote_font = _quote_font(48, False)
+
+    # Keep the quote readable while preventing giant images.
+    text = (message.content or "").strip()
+    if not text:
+        text = "[attachment / embed / non-text message]"
+    if len(text) > 1200:
+        text = text[:1197] + "..."
+
+    # Download the author's current avatar.
+    avatar = None
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(str(message.author.display_avatar.replace(size=256)), timeout=10) as resp:
+                if resp.status == 200:
+                    avatar = Image.open(BytesIO(await resp.read())).convert("RGBA")
+    except Exception:
+        avatar = None
+
+    dummy = Image.new("RGB", (width, 500), (14, 14, 17))
+    draw = ImageDraw.Draw(dummy)
+    quote_lines = _wrap_quote(draw, text, quote_font, width - padding * 2)
+    line_height = 64
+    quote_height = max(1, len(quote_lines)) * line_height
+    height = max(430, 230 + quote_height + 80)
+
+    image = Image.new("RGB", (width, height), (14, 14, 17))
+    draw = ImageDraw.Draw(image)
+
+    # Subtle quote mark / accent.
+    draw.rounded_rectangle((22, 22, width - 22, height - 22), radius=28, fill=(20, 20, 24), outline=(48, 48, 56), width=2)
+    draw.rounded_rectangle((22, 22, 34, height - 22), radius=6, fill=(239, 206, 173))
+    draw.text((padding, 48), "\u201c", font=_quote_font(100, True), fill=(239, 206, 173))
+
+    # Circular avatar.
+    avatar_x, avatar_y = padding, 125
+    if avatar:
+        avatar.thumbnail((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+        mask = Image.new("L", (avatar_size, avatar_size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, avatar_size, avatar_size), fill=255)
+        layer = Image.new("RGBA", (avatar_size, avatar_size), (0, 0, 0, 0))
+        layer.paste(avatar, ((avatar_size - avatar.width) // 2, (avatar_size - avatar.height) // 2), avatar)
+        image.paste(layer, (avatar_x, avatar_y), mask)
+    else:
+        draw.ellipse((avatar_x, avatar_y, avatar_x + avatar_size, avatar_y + avatar_size), fill=(55, 55, 65))
+
+    name_x = avatar_x + avatar_size + 28
+    display_name = message.author.display_name[:40]
+    draw.text((name_x, avatar_y + 8), display_name, font=username_font, fill=(245, 245, 248))
+    draw.text((name_x, avatar_y + 60), f"@{message.author.name}", font=handle_font, fill=(160, 160, 170))
+
+    # Quote text.
+    quote_y = avatar_y + avatar_size + 48
+    for line in quote_lines:
+        draw.text((padding, quote_y), line, font=quote_font, fill=(238, 238, 242))
+        quote_y += line_height
+
+    # Small server label, without exposing a full Discord message URL.
+    footer = message.guild.name if message.guild else "Discord"
+    draw.text((padding, height - 70), footer[:60], font=handle_font, fill=(120, 120, 130))
+
+    out = BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    out.seek(0)
+    return out
 boost_roles = {}
 autoresponders = defaultdict(dict)
 autoroles = {}
@@ -116,7 +314,8 @@ COMMAND_INFO = {
     "permissions": ("Show your permissions or another member's.", "permissions [member]", "permissions @user", []),
     "guildicon": ("Show the server icon.", "guildicon", "guildicon", []),
     "boost": ("Show the server boost count.", "boost", "boost", []),
-    "welcome": ("Configure welcome messages.", "welcome [channel]", "welcome #welcome", []),
+    "welcome": ("Configure and customize welcome embeds.", "welcome <channel|title|description|color|image|thumbnail|preview|reset>", "welcome title Welcome to {server}!", []),
+    "quote": ("Turn a replied-to message into a quote image.", "quote", "reply to a message, then use ,quote", ["q"]),
     "disablewelcome": ("Disable welcome messages.", "disablewelcome", "disablewelcome", []),
     "booster": ("Configure the automatic booster role.", "booster [role]", "booster @Booster", []),
     "boosterremove": ("Remove the automatic booster role.", "boosterremove", "boosterremove", ["booster-off"]),
@@ -299,13 +498,15 @@ async def on_member_join(member):
         if role and role < member.guild.me.top_role:
             try: await member.add_roles(role, reason="bleeed autorole")
             except discord.HTTPException: pass
-    channel_id = welcome_channels.get(member.guild.id)
-    if channel_id:
-        channel = member.guild.get_channel(channel_id)
+    cfg = get_welcome_config(member.guild.id)
+    channel_id = cfg.get("channel") or welcome_channels.get(member.guild.id)
+    if cfg.get("enabled") and channel_id:
+        channel = member.guild.get_channel(int(channel_id))
         if channel:
-            e = make_embed("welcome", f"welcome {member.mention} to **{member.guild.name}**!\n\nmember **#{member.guild.member_count}**")
-            e.set_thumbnail(url=member.display_avatar.url)
-            await channel.send(embed=e)
+            try:
+                await channel.send(embed=build_welcome_embed(member))
+            except discord.HTTPException as exc:
+                print(f"welcome send failed: {exc}")
 
 
 @bot.event
@@ -728,15 +929,143 @@ async def boost(ctx):
     ])
     await ctx.send(embed=e)
 
+@bot.hybrid_command(name="quote", aliases=["q"], description="Turn a replied-to message into a quote image.")
+async def quote(ctx):
+    reference = getattr(ctx.message, "reference", None)
+    if not reference or not reference.message_id:
+        return await ctx.send(embed=make_embed("quote", f"reply to a message first, then use `{PREFIX}quote`."))
+
+    try:
+        quoted = reference.resolved if isinstance(reference.resolved, discord.Message) else None
+        if quoted is None:
+            quoted = await ctx.channel.fetch_message(reference.message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return await ctx.send(embed=make_embed("quote", "i couldn't fetch the message you replied to."))
+
+    try:
+        image = await make_quote_image(quoted)
+        await ctx.send(file=discord.File(image, filename="quote.png"))
+    except Exception as exc:
+        print(f"quote generation failed: {exc}")
+        await ctx.send(embed=make_embed("quote", "i couldn't generate that quote image right now."))
+
+
 @bot.command()
-async def welcome(ctx, channel: discord.TextChannel=None):
-    if not has_manage(ctx): return await ctx.send(embed=make_embed("no permission", "you need Manage Server."))
-    channel=channel or ctx.channel; welcome_channels[ctx.guild.id]=channel.id; await ctx.send(embed=make_embed("welcome enabled", f"welcome messages will be sent in {channel.mention}."))
+async def welcome(ctx, action=None, *, value=""):
+
+    if not has_manage(ctx):
+        return await ctx.send(embed=make_embed("no permission", "you need Manage Server."))
+
+    cfg = get_welcome_config(ctx.guild.id)
+    action = (action or "status").lower()
+
+    # Keep the original easy setup: ,welcome #welcome
+    if action.startswith("<@&") or action.startswith("<#") or action.startswith("#"):
+        channel = None
+        if ctx.message.channel_mentions:
+            channel = ctx.message.channel_mentions[0]
+        elif action.startswith("#"):
+            try:
+                channel = ctx.guild.get_channel(int(action[1:]))
+            except ValueError:
+                channel = None
+        if not channel:
+            return await ctx.send(embed=make_embed("welcome", f"usage: `{PREFIX}welcome #channel`"))
+        cfg["enabled"] = True
+        cfg["channel"] = channel.id
+        welcome_channels[ctx.guild.id] = channel.id
+        save_welcome_config()
+        return await ctx.send(embed=make_embed("Welcome Enabled", f"welcome messages will be sent in {channel.mention}."))
+
+    if action in {"channel", "setchannel"}:
+        channel = ctx.message.channel_mentions[0] if ctx.message.channel_mentions else None
+        if not channel:
+            return await ctx.send(embed=make_embed("Welcome", f"usage: `{PREFIX}welcome channel #welcome`"))
+        cfg["enabled"] = True
+        cfg["channel"] = channel.id
+        welcome_channels[ctx.guild.id] = channel.id
+        save_welcome_config()
+        return await ctx.send(embed=make_embed("Welcome Channel Updated", f"channel: {channel.mention}"))
+
+    if action in {"status", "settings"}:
+        channel = ctx.guild.get_channel(cfg.get("channel")) if cfg.get("channel") else None
+        body = (
+            f"**Enabled**\n`{cfg.get('enabled', False)}`\n\n"
+            f"**Channel**\n{channel.mention if channel else 'not configured'}\n\n"
+            f"**Title**\n{cfg.get('title', '')}\n\n"
+            f"**Description**\n{cfg.get('description', '')}\n\n"
+            f"**Color**\n`{cfg.get('color', '#000001')}`\n\n"
+            f"**Image**\n{cfg.get('image') or 'none'}\n\n"
+            f"**Thumbnail**\n{cfg.get('thumbnail') or 'none'}"
+        )
+        return await ctx.send(embed=make_embed("Welcome Settings", body))
+
+    if action == "title":
+        if not value.strip():
+            return await ctx.send(embed=make_embed("Welcome", f"usage: `{PREFIX}welcome title Welcome to {{server}}!`"))
+        cfg["title"] = value.strip()[:256]
+    elif action in {"description", "desc", "message"}:
+        if not value.strip():
+            return await ctx.send(embed=make_embed("Welcome", f"usage: `{PREFIX}welcome description Welcome {{user}} to {{server}}!`"))
+        cfg["description"] = value.strip()[:4096]
+    elif action == "color":
+        parsed = parse_color(value)
+        if parsed is None:
+            return await ctx.send(embed=make_embed("Welcome", "color must be a 6-digit hex value, for example `#efcead`."))
+        cfg["color"] = "#" + format(parsed, "06x")
+    elif action == "image":
+        if value.lower() in {"off", "none", "remove"}:
+            cfg["image"] = None
+        elif value.startswith(("http://", "https://")):
+            cfg["image"] = value.strip()
+        else:
+            return await ctx.send(embed=make_embed("Welcome", "image must be a direct `http://` or `https://` URL, or `off`."))
+    elif action == "thumbnail":
+        if value.lower() in {"off", "none", "remove"}:
+            cfg["thumbnail"] = None
+        elif value.lower() in {"user", "avatar", "default"}:
+            cfg["thumbnail"] = "{user_avatar}"
+        elif value.startswith(("http://", "https://")):
+            cfg["thumbnail"] = value.strip()
+        else:
+            return await ctx.send(embed=make_embed("Welcome", "thumbnail must be `user`, a direct URL, or `off`."))
+    elif action == "preview":
+        # Preview uses the command author as a fake new member.
+        fake_member = ctx.author
+        return await ctx.send(embed=build_welcome_embed(fake_member))
+    elif action == "reset":
+        welcome_config.pop(ctx.guild.id, None)
+        welcome_channels.pop(ctx.guild.id, None)
+        save_welcome_config()
+        return await ctx.send(embed=make_embed("Welcome Reset", "the welcome embed has been reset to its default settings."))
+    elif action in {"help", "commands"}:
+        return await ctx.send(embed=make_embed("Welcome Setup",
+            f"`{PREFIX}welcome #channel` — enable welcome messages\n"
+            f"`{PREFIX}welcome title <text>` — edit the title\n"
+            f"`{PREFIX}welcome description <text>` — edit the message\n"
+            f"`{PREFIX}welcome color #hex` — edit the embed color\n"
+            f"`{PREFIX}welcome image <url|off>` — set/remove the image\n"
+            f"`{PREFIX}welcome thumbnail <user|url|off>` — set the thumbnail\n"
+            f"`{PREFIX}welcome preview` — preview it\n"
+            f"`{PREFIX}welcome settings` — view settings\n"
+            f"`{PREFIX}welcome reset` — restore defaults\n\n"
+            f"Variables: `{user}` `{username}` `{displayname}` `{server}` `{membercount}` `{id}`"
+        ))
+    else:
+        return await ctx.send(embed=make_embed("Welcome", f"unknown option `{action}`. Use `{PREFIX}welcome help`."))
+
+    cfg["enabled"] = bool(cfg.get("channel"))
+    save_welcome_config()
+    await ctx.send(embed=make_embed("Welcome Updated", f"**{action}** has been updated. Use `{PREFIX}welcome preview` to see the current embed."))
 
 @bot.command()
 async def disablewelcome(ctx):
     if not has_manage(ctx): return await ctx.send(embed=make_embed("no permission", "you need Manage Server."))
-    welcome_channels.pop(ctx.guild.id,None); await ctx.send(embed=make_embed("welcome disabled", "welcome messages are now disabled."))
+    cfg = get_welcome_config(ctx.guild.id)
+    cfg["enabled"] = False
+    welcome_channels.pop(ctx.guild.id, None)
+    save_welcome_config()
+    await ctx.send(embed=make_embed("Welcome Disabled", "welcome messages are now disabled. Your custom embed settings were kept."))
 
 @bot.command()
 async def booster(ctx, role: discord.Role=None):
