@@ -20,7 +20,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 start_time = time.time()
-warnings = defaultdict(lambda: defaultdict(list))
+warning_data = defaultdict(lambda: defaultdict(list))
 afk_data = {}
 welcome_channels = {}
 boost_roles = {}
@@ -614,7 +614,7 @@ async def unwarn(ctx, member: discord.Member, number: int):
         return await ctx.send(embed=make_embed("no permission", "you don't have the required warn role."))
     if not target_ok(ctx, member):
         return await ctx.send(embed=make_embed("error", "you can't moderate that member."))
-    items = warnings[ctx.guild.id][member.id]
+    items = warning_data[ctx.guild.id][member.id]
     if number < 1 or number > len(items):
         return await ctx.send(embed=make_embed("warning", f"warning **#{number}** doesn't exist for {member.mention}."))
     removed = items.pop(number - 1)
@@ -626,8 +626,8 @@ async def clearwarnings(ctx, member: discord.Member):
         return await ctx.send(embed=make_embed("no permission", "you don't have the required warn role."))
     if not target_ok(ctx, member):
         return await ctx.send(embed=make_embed("error", "you can't moderate that member."))
-    count = len(warnings[ctx.guild.id][member.id])
-    warnings[ctx.guild.id][member.id].clear()
+    count = len(warning_data[ctx.guild.id][member.id])
+    warning_data[ctx.guild.id][member.id].clear()
     await ctx.send(embed=result_embed("Warnings Cleared", "User", member.mention, extra=[("Removed", f"`{count}` warnings"), ("Moderator", ctx.author.mention)]))
 
 @bot.hybrid_command(name="servericon", aliases=["icon"], description="Show the server icon.")
@@ -869,13 +869,13 @@ async def warn(ctx,member:discord.Member,*,reason="no reason provided"):
         return await ctx.send(embed=make_embed("no permission", "you need the configured warn role or Administrator."))
     if not target_ok(ctx,member):
         return await ctx.send(embed=make_embed("cannot warn member", "You can't warn yourself, the server owner, or someone at/above your role."))
-    warnings[ctx.guild.id][member.id].append(reason)
-    await ctx.send(embed=result_embed("Member Warned", "User", fmt_user(member), extra=[("Reason", reason), ("Total Warnings", str(len(warnings[ctx.guild.id][member.id]))), ("Moderator", ctx.author.mention)]))
+    warning_data[ctx.guild.id][member.id].append(reason)
+    await ctx.send(embed=result_embed("Member Warned", "User", fmt_user(member), extra=[("Reason", reason), ("Total Warnings", str(len(warning_data[ctx.guild.id][member.id]))), ("Moderator", ctx.author.mention)]))
 
 @bot.command()
 async def warnings(ctx,member:discord.Member=None):
     member=member or ctx.author
-    items=warnings[ctx.guild.id][member.id]
+    items=warning_data[ctx.guild.id][member.id]
     body="\n".join(f"`{i:02}` **{r}**" for i,r in enumerate(items,1)) or "No warnings recorded."
     await ctx.send(embed=result_embed(f"Warnings · {member.display_name}", "User", fmt_user(member), extra=[("Warnings", body)]))
 
