@@ -136,91 +136,205 @@ def _wrap_quote(draw, text, font, max_width):
         test = word if not current else current + " " + word
         if draw.textbbox((0, 0), test, font=font)[2] <= max_width:
             current = test
-        else:
-            if current:
-                lines.append(current)
-            # Break very long unbroken words safely.
+            continue
+        if current:
+            lines.append(current)
+        # Break very long words so they never run off the card.
+        if draw.textbbox((0, 0), word, font=font)[2] <= max_width:
             current = word
+            continue
+        chunk = ""
+        for char in word:
+            test_chunk = chunk + char
+            if draw.textbbox((0, 0), test_chunk, font=font)[2] <= max_width:
+                chunk = test_chunk
+            else:
+                if chunk:
+                    lines.append(chunk)
+                chunk = char
+        current = chunk
     if current:
         lines.append(current)
     return lines or [""]
 
 
-async def make_quote_image(message):
-    if Image is None:
-        raise RuntimeError("Pillow is not installed")
+def _fit_cover(image, size):
+    """Crop an image to fill size while keeping its aspect ratio."""
+    target_w, target_h = size
+    image = image.convert("RGB")
+    ratio = max(target_w / image.width, target_h / image.height)
+    new_size = (max(1, int(image.width * ratio)), max(1, int(image.height * ratio)))
+    image = image.resize(new_size, Image.Resampling.LANCZOS)
+    left = max(0, (image.width - target_w) // 2)
+    top = max(0, (image.height - target_h) // 2)
+    return image.crop((left, top, left + target_w, top + target_h))
 
-    width = 1200
-    padding = 70
-    avatar_size = 110
-    username_font = _quote_font(42, True)
-    handle_font = _quote_font(28, False)
-    quote_font = _quote_font(48, False)
 
-    # Keep the quote readable while preventing giant images.
+async def _download_quote_visual(message):
+    """Return the first useful image from the quoted message, or its avatar."""
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        # Prefer an image attachment because that matches the meme/quote style.
+        for attachment in message.attachments:
+            content_type = (attachment.content_type or "").lower()
+            if content_type.startswith("image/") or re.search(r"\.(png|jpe?g|webp|gif)$", attachment.filename, re.I):
+                try:
+                    async with session.get(attachment.url, timeout=10) as resp:
+                        if resp.status == 200:
+                            raw = await resp.read()
+                            return Image.open(BytesIO(raw)).convert("RGB")
+                except Exception:
+                    pass
+
+        # If the message has an image embed, use that next.
+        for embed in message.embeds:
+            image_url = getattr(getattr(embed, "image", None), "url", None)
+            if image_url:
+                try:
+                    async with session.get(str(image_url), timeout=10) as resp:
+                        if resp.status == 200:
+                            return Image.open(BytesIO(await resp.read())).convert("RGB")
+                except Exception:
+                    pass
+
+        # Otherwise use the author's profile picture.
+        try:
+            url = str(message.author.display_avatar.replace(size=512))
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    return Image.open(BytesIO(await resp.read())).convert("RGB")
+        except Exception:
+            pass
+
+    return None
+
+
+async def _quote_data(message):
     text = (message.content or "").strip()
     if not text:
         text = "[attachment / embed / non-text message]"
     if len(text) > 1200:
         text = text[:1197] + "..."
+    visual = await _download_quote_visual(message)
+    return {
+        "text": text,
+        "visual": visual,
+        "display_name": message.author.display_name[:40],
+        "username": message.author.name[:40],
+        "server": (message.guild.name if message.guild else "Discord")[:60],
+    }
 
-    # Download the author's current avatar.
-    avatar = None
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(str(message.author.display_avatar.replace(size=256)), timeout=10) as resp:
-                if resp.status == 200:
-                    avatar = Image.open(BytesIO(await resp.read())).convert("RGBA")
-    except Exception:
-        avatar = None
 
-    dummy = Image.new("RGB", (width, 500), (14, 14, 17))
-    draw = ImageDraw.Draw(dummy)
-    quote_lines = _wrap_quote(draw, text, quote_font, width - padding * 2)
-    line_height = 64
-    quote_height = max(1, len(quote_lines)) * line_height
-    height = max(430, 230 + quote_height + 80)
+def _render_quote_frame(data, motion=0.0):
+    """Render the quote card in the style of the supplied reference."""
+    width, height = 1200, 600
+    left_width = 500
+    right_width = width - left_width
+    image = Image.new("RGB", (width, height), (8, 10, 13))
 
-    image = Image.new("RGB", (width, height), (14, 14, 17))
-    draw = ImageDraw.Draw(image)
-
-    # Subtle quote mark / accent.
-    draw.rounded_rectangle((22, 22, width - 22, height - 22), radius=28, fill=(20, 20, 24), outline=(48, 48, 56), width=2)
-    draw.rounded_rectangle((22, 22, 34, height - 22), radius=6, fill=(239, 206, 173))
-    draw.text((padding, 48), "\u201c", font=_quote_font(100, True), fill=(239, 206, 173))
-
-    # Circular avatar.
-    avatar_x, avatar_y = padding, 125
-    if avatar:
-        avatar.thumbnail((avatar_size, avatar_size), Image.Resampling.LANCZOS)
-        mask = Image.new("L", (avatar_size, avatar_size), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, avatar_size, avatar_size), fill=255)
-        layer = Image.new("RGBA", (avatar_size, avatar_size), (0, 0, 0, 0))
-        layer.paste(avatar, ((avatar_size - avatar.width) // 2, (avatar_size - avatar.height) // 2), avatar)
-        image.paste(layer, (avatar_x, avatar_y), mask)
+    # Left visual: attachment if available, otherwise the user's avatar.
+    visual = data["visual"]
+    if visual is None:
+        visual = Image.new("RGB", (left_width, height), (28, 29, 33))
     else:
-        draw.ellipse((avatar_x, avatar_y, avatar_x + avatar_size, avatar_y + avatar_size), fill=(55, 55, 65))
+        # Subtle zoom/pan is what makes the GIF version feel alive.
+        zoom = 1.0 + abs(motion) * 0.035
+        scaled = visual.resize((max(left_width, int(visual.width * zoom)), max(height, int(visual.height * zoom))), Image.Resampling.LANCZOS)
+        visual = _fit_cover(scaled, (left_width, height))
+        visual = visual.convert("L").convert("RGB")
+    image.paste(visual, (0, 0))
 
-    name_x = avatar_x + avatar_size + 28
-    display_name = message.author.display_name[:40]
-    draw.text((name_x, avatar_y + 8), display_name, font=username_font, fill=(245, 245, 248))
-    draw.text((name_x, avatar_y + 60), f"@{message.author.name}", font=handle_font, fill=(160, 160, 170))
+    # Soft divider between the visual and quote side.
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((left_width - 2, 0, left_width + 2, height), fill=(12, 13, 16))
 
-    # Quote text.
-    quote_y = avatar_y + avatar_size + 48
+    # Right side, close to the reference: centered white text on near-black.
+    right_x = left_width + 45
+    right_pad = 50
+    quote_font = _quote_font(43, False)
+    author_font = _quote_font(26, False)
+    name_font = _quote_font(30, True)
+    quote_lines = _wrap_quote(draw, data["text"], quote_font, right_width - right_pad * 2)
+    line_height = 55
+    total_text_h = len(quote_lines) * line_height
+    start_y = max(105, (height - total_text_h) // 2 - 25)
+
+    # Tiny quotation mark, not a label.
+    draw.text((right_x, 52), "“", font=_quote_font(74, True), fill=(238, 238, 240))
+
+    y = start_y
     for line in quote_lines:
-        draw.text((padding, quote_y), line, font=quote_font, fill=(238, 238, 242))
-        quote_y += line_height
+        bbox = draw.textbbox((0, 0), line, font=quote_font)
+        line_w = bbox[2] - bbox[0]
+        x = left_width + (right_width - line_w) / 2
+        # A tiny motion offset is used only by the GIF version.
+        x += motion * 1.5
+        draw.text((x, y), line, font=quote_font, fill=(244, 244, 246))
+        y += line_height
 
-    # Small server label, without exposing a full Discord message URL.
-    footer = message.guild.name if message.guild else "Discord"
-    draw.text((padding, height - 70), footer[:60], font=handle_font, fill=(120, 120, 130))
+    # Person who said it: actual name + username, no "user:"/"pfp:" labels.
+    author_y = min(height - 120, y + 28)
+    name = data["display_name"]
+    handle = f"@{data['username']}"
+    name_box = draw.textbbox((0, 0), name, font=name_font)
+    handle_box = draw.textbbox((0, 0), handle, font=author_font)
+    name_x = left_width + (right_width - (name_box[2] - name_box[0])) / 2
+    handle_x = left_width + (right_width - (handle_box[2] - handle_box[0])) / 2
+    draw.text((name_x, author_y), name, font=name_font, fill=(242, 242, 244))
+    draw.text((handle_x, author_y + 38), handle, font=author_font, fill=(145, 147, 153))
 
+    # Small watermark in the same unobtrusive place as the example.
+    watermark = f"bleeed • {data['server']}"
+    wb = draw.textbbox((0, 0), watermark, font=author_font)
+    draw.text((width - 30 - (wb[2] - wb[0]), height - 43), watermark, font=author_font, fill=(100, 102, 108))
+    return image
+
+
+async def make_quote_image(message):
+    if Image is None:
+        raise RuntimeError("Pillow is not installed")
+    data = await _quote_data(message)
+    image = _render_quote_frame(data)
     out = BytesIO()
     image.save(out, format="PNG", optimize=True)
     out.seek(0)
     return out
+
+
+async def make_quote_gif(message):
+    if Image is None:
+        raise RuntimeError("Pillow is not installed")
+    data = await _quote_data(message)
+    frames = []
+    # Gentle back-and-forth zoom/pan; it stays readable instead of being flashy.
+    motions = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25, 0.0, -0.25, -0.5, -0.75]
+    for motion in motions:
+        frame = _render_quote_frame(data, motion=motion).convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+        frames.append(frame)
+    out = BytesIO()
+    frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:], duration=90, loop=0, disposal=2, optimize=False)
+    out.seek(0)
+    return out
+
+
+class QuoteView(discord.ui.View):
+    def __init__(self, quoted_message, author_id):
+        super().__init__(timeout=300)
+        self.quoted_message = quoted_message
+        self.author_id = author_id
+
+    @discord.ui.button(label="make gif", style=discord.ButtonStyle.secondary)
+    async def make_gif(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Let anyone viewing the quote make the GIF; no permission is required.
+        await interaction.response.defer()
+        try:
+            gif = await make_quote_gif(self.quoted_message)
+            await interaction.followup.send(file=discord.File(gif, filename="quote.gif"))
+        except Exception as exc:
+            print(f"quote gif generation failed: {exc}")
+            await interaction.followup.send("i couldn't make that quote a gif right now.", ephemeral=True)
+
 boost_roles = {}
 autoresponders = defaultdict(dict)
 autoroles = {}
@@ -396,7 +510,7 @@ COMMAND_INFO.update({
 })
 
 CATEGORIES = [
-    ("Information", ["afk", "avatar", "banner", "botinfo", "channelinfo", "commands", "emojis", "firstmessage", "guildicon", "help", "inviteinfo", "invites", "membercount", "permissions", "roleinfo", "roles", "servericon", "serverinfo", "serverstats", "stickers", "userinfo", "voiceinfo"]),
+    ("Information", ["afk", "avatar", "banner", "botinfo", "channelinfo", "commands", "emojis", "firstmessage", "guildicon", "help", "inviteinfo", "invites", "membercount", "permissions", "quote", "roleinfo", "roles", "servericon", "serverinfo", "serverstats", "stickers", "userinfo", "voiceinfo"]),
     ("Server", ["ar", "autorole", "autoreact", "booster", "boosterremove", "boost", "filter", "welcome", "disablewelcome", "poll", "ticket", "close", "giveaway", "gaw", "announce", "create", "remind"]),
     ("Security", ["antinuke", "antiraid", "security"]),
     ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "unwarn", "clearwarnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "addrole", "removerole", "topic", "say"]),
@@ -944,11 +1058,11 @@ async def quote(ctx):
 
     try:
         image = await make_quote_image(quoted)
-        await ctx.send(file=discord.File(image, filename="quote.png"))
+        view = QuoteView(quoted, ctx.author.id)
+        await ctx.send(file=discord.File(image, filename="quote.png"), view=view)
     except Exception as exc:
         print(f"quote generation failed: {exc}")
         await ctx.send(embed=make_embed("quote", "i couldn't generate that quote image right now."))
-
 
 @bot.command()
 async def welcome(ctx, action=None, *, value=""):
