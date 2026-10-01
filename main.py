@@ -65,11 +65,28 @@ def result_embed(title, label, value, *, extra=None):
     return discord.Embed(description="\n\n".join(lines), color=COLOR)
 
 def role_ok(member, role_ids):
-    return any(r.id in role_ids for r in member.roles)
+    # Server Administrators always pass BLEEED's role-based moderation checks.
+    return member.guild_permissions.administrator or any(r.id in role_ids for r in member.roles)
 
 
 def target_ok(ctx, member):
-    return member != ctx.author and member != ctx.guild.owner and member.top_role < ctx.author.top_role
+    if member == ctx.author or member == ctx.guild.owner:
+        return False
+    me = ctx.guild.me
+    if me is None:
+        return False
+    # The bot must be able to act on the target. The invoker must also outrank
+    # the target unless they are the server owner/administrator.
+    if member.top_role >= me.top_role:
+        return False
+    if not ctx.author.guild_permissions.administrator and member.top_role >= ctx.author.top_role:
+        return False
+    return True
+
+
+def bot_can(ctx, permission):
+    me = ctx.guild.me
+    return bool(me and getattr(me.guild_permissions, permission, False))
 
 
 def fmt_user(member):
@@ -766,60 +783,136 @@ async def autoreact(ctx, action="list", *, data=""):
 
 @bot.command(aliases=["b"])
 async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
-    if not role_ok(ctx.author,{BAN_ROLE}): return await ctx.send(embed=make_embed("no permission", "you don't have the required ban role."))
-    if not target_ok(ctx,member): return await ctx.send(embed=make_embed("error", "you can't moderate that member."))
-    await member.ban(reason=reason); await ctx.send(embed=make_embed("member banned", f"**{member}** was banned.\nreason: {reason}"))
+    if not role_ok(ctx.author, {BAN_ROLE}):
+        return await ctx.send(embed=make_embed("no permission", "you need the configured ban role or Administrator."))
+    if not bot_can(ctx, "ban_members"):
+        return await ctx.send(embed=make_embed("bot permission missing", "I need **Ban Members** permission to do that."))
+    if not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("cannot ban member", "The target must be below my highest role and below your highest role."))
+    try:
+        await member.ban(reason=reason, delete_message_seconds=0)
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("ban failed", "Discord denied the ban. Check my **Ban Members** permission and role hierarchy."))
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("ban failed", "Discord returned an error while banning that member."))
+    await ctx.send(embed=result_embed("Member Banned", "User", fmt_user(member), extra=[("Reason", reason), ("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["ub"])
-async def unban(ctx,user_id:int):
-    if not role_ok(ctx.author,{BAN_ROLE}): return await ctx.send(embed=make_embed("no permission", "you don't have the required ban role."))
-    try: await ctx.guild.unban(discord.Object(id=user_id)); await ctx.send(embed=make_embed("member unbanned", f"`{user_id}` was unbanned."))
-    except discord.NotFound: await ctx.send(embed=make_embed("error", "that user isn't banned or the ID is invalid."))
+async def unban(ctx, user_id:int):
+    if not role_ok(ctx.author, {BAN_ROLE}):
+        return await ctx.send(embed=make_embed("no permission", "you need the configured ban role or Administrator."))
+    if not bot_can(ctx, "ban_members"):
+        return await ctx.send(embed=make_embed("bot permission missing", "I need **Ban Members** permission to unban users."))
+    try:
+        await ctx.guild.unban(discord.Object(id=user_id), reason=f"unbanned by {ctx.author}")
+    except discord.NotFound:
+        return await ctx.send(embed=make_embed("unban failed", "That user is not currently banned, or the ID is invalid."))
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("unban failed", "Discord denied the action. Check my **Ban Members** permission."))
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("unban failed", "Discord returned an error while unbanning that user."))
+    await ctx.send(embed=result_embed("Member Unbanned", "User ID", f"`{user_id}`", extra=[("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["k"])
-async def kick(ctx,member:discord.Member,*,reason="no reason provided"):
-    if not role_ok(ctx.author,KICK_ROLES): return await ctx.send(embed=make_embed("no permission", "you don't have the required kick role."))
-    if not target_ok(ctx,member): return await ctx.send(embed=make_embed("error", "you can't kick that member."))
-    await member.kick(reason=reason); await ctx.send(embed=make_embed("member kicked", f"**{member}** was kicked.\nreason: {reason}"))
+async def kick(ctx, member:discord.Member,*,reason="no reason provided"):
+    if not role_ok(ctx.author, KICK_ROLES):
+        return await ctx.send(embed=make_embed("no permission", "you need the configured kick role or Administrator."))
+    if not bot_can(ctx, "kick_members"):
+        return await ctx.send(embed=make_embed("bot permission missing", "I need **Kick Members** permission to do that."))
+    if not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("cannot kick member", "The target must be below my highest role and below your highest role."))
+    try:
+        await member.kick(reason=reason)
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("kick failed", "Discord denied the kick. Check my **Kick Members** permission and role hierarchy."))
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("kick failed", "Discord returned an error while kicking that member."))
+    await ctx.send(embed=result_embed("Member Kicked", "User", fmt_user(member), extra=[("Reason", reason), ("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["timeout","to"])
 async def mute(ctx,member:discord.Member,minutes:int=10,*,reason="no reason provided"):
-    if not role_ok(ctx.author,MUTE_ROLES): return await ctx.send(embed=make_embed("no permission", "you don't have the required mute role."))
-    if not target_ok(ctx,member): return await ctx.send(embed=make_embed("error", "you can't moderate that member."))
-    await member.timeout(timedelta(minutes=minutes),reason=reason); await ctx.send(embed=make_embed("member muted", f"{member.mention} was muted for **{minutes}m**.\nreason: {reason}"))
+    if not role_ok(ctx.author, MUTE_ROLES):
+        return await ctx.send(embed=make_embed("no permission", "you need the configured mute role or Administrator."))
+    if not bot_can(ctx, "moderate_members"):
+        return await ctx.send(embed=make_embed("bot permission missing", "I need **Moderate Members** permission to mute users."))
+    if minutes < 1 or minutes > 40320:
+        return await ctx.send(embed=make_embed("invalid duration", "Mute duration must be between **1 minute** and **28 days**."))
+    if not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("cannot mute member", "The target must be below my highest role and below your highest role."))
+    try:
+        await member.timeout(timedelta(minutes=minutes), reason=reason)
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("mute failed", "Discord denied the timeout. Check my **Moderate Members** permission and role hierarchy."))
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("mute failed", "Discord returned an error while muting that member."))
+    await ctx.send(embed=result_embed("Member Muted", "User", fmt_user(member), extra=[("Duration", f"{minutes} minutes"), ("Reason", reason), ("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["um","untimeout"])
 async def unmute(ctx,member:discord.Member):
-    if not role_ok(ctx.author,MUTE_ROLES): return await ctx.send(embed=make_embed("no permission", "you don't have the required mute role."))
-    if not target_ok(ctx,member): return await ctx.send(embed=make_embed("error", "you can't moderate that member."))
-    await member.timeout(None,reason=f"unmuted by {ctx.author}"); await ctx.send(embed=make_embed("member unmuted", f"{member.mention} is no longer muted."))
+    if not role_ok(ctx.author, MUTE_ROLES):
+        return await ctx.send(embed=make_embed("no permission", "you need the configured mute role or Administrator."))
+    if not bot_can(ctx, "moderate_members"):
+        return await ctx.send(embed=make_embed("bot permission missing", "I need **Moderate Members** permission to remove timeouts."))
+    if not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("cannot unmute member", "The target must be below my highest role and below your highest role."))
+    try:
+        await member.timeout(None, reason=f"unmuted by {ctx.author}")
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("unmute failed", "Discord denied the action. Check my **Moderate Members** permission and role hierarchy."))
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("unmute failed", "Discord returned an error while removing the timeout."))
+    await ctx.send(embed=result_embed("Member Unmuted", "User", fmt_user(member), extra=[("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["w"])
 async def warn(ctx,member:discord.Member,*,reason="no reason provided"):
-    if not role_ok(ctx.author,WARN_ROLES): return await ctx.send(embed=make_embed("no permission", "you don't have the required warn role."))
-    if not target_ok(ctx,member): return await ctx.send(embed=make_embed("error", "you can't warn that member."))
-    warnings[ctx.guild.id][member.id].append(reason); await ctx.send(embed=make_embed("member warned", f"{member.mention} received a warning.\nreason: {reason}"))
+    if not role_ok(ctx.author, WARN_ROLES):
+        return await ctx.send(embed=make_embed("no permission", "you need the configured warn role or Administrator."))
+    if not target_ok(ctx,member):
+        return await ctx.send(embed=make_embed("cannot warn member", "You can't warn yourself, the server owner, or someone at/above your role."))
+    warnings[ctx.guild.id][member.id].append(reason)
+    await ctx.send(embed=result_embed("Member Warned", "User", fmt_user(member), extra=[("Reason", reason), ("Total Warnings", str(len(warnings[ctx.guild.id][member.id]))), ("Moderator", ctx.author.mention)]))
 
 @bot.command()
 async def warnings(ctx,member:discord.Member=None):
-    member=member or ctx.author; items=warnings[ctx.guild.id][member.id]; await ctx.send(embed=make_embed(f"warnings • {member.display_name}", "\n".join(f"**{i}.** {r}" for i,r in enumerate(items,1)) or "no warnings."))
+    member=member or ctx.author
+    items=warnings[ctx.guild.id][member.id]
+    body="\n".join(f"`{i:02}` **{r}**" for i,r in enumerate(items,1)) or "No warnings recorded."
+    await ctx.send(embed=result_embed(f"Warnings · {member.display_name}", "User", fmt_user(member), extra=[("Warnings", body)]))
 
 @bot.command(aliases=["p","clear"])
 async def purge(ctx,amount:int=10):
-    if not role_ok(ctx.author,PURGE_ROLES): return await ctx.send(embed=make_embed("no permission", "you don't have the required purge role."))
-    deleted=await ctx.channel.purge(limit=max(1,min(amount,100))+1); msg=await ctx.send(embed=make_embed("purged",f"deleted **{max(0,len(deleted)-1)}** messages.")); await asyncio.sleep(3)
+    if not role_ok(ctx.author,PURGE_ROLES):
+        return await ctx.send(embed=make_embed("no permission", "you need the configured purge role or Administrator."))
+    if not bot_can(ctx, "manage_messages"):
+        return await ctx.send(embed=make_embed("bot permission missing", "I need **Manage Messages** permission to purge messages."))
+    if amount < 1 or amount > 100:
+        return await ctx.send(embed=make_embed("invalid amount", "Choose a number between **1** and **100**."))
+    try:
+        deleted=await ctx.channel.purge(limit=amount + 1)
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("purge failed", "Discord denied the action. Check my **Manage Messages** and **Read Message History** permissions."))
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("purge failed", "Discord returned an error while deleting messages."))
+    msg=await ctx.send(embed=result_embed("Messages Purged", "Deleted", f"**{max(0,len(deleted)-1)}** messages", extra=[("Moderator", ctx.author.mention)]))
+    await asyncio.sleep(3)
     try: await msg.delete()
     except discord.HTTPException: pass
 
 @bot.command(aliases=["l"])
 async def lock(ctx):
-    if not role_ok(ctx.author,PURGE_ROLES): return await ctx.send(embed=make_embed("no permission", "you don't have the required moderation role."))
-    await ctx.channel.set_permissions(ctx.guild.default_role,send_messages=False); await ctx.send(embed=make_embed("locked",f"{ctx.channel.mention} is now locked."))
+    if not role_ok(ctx.author,PURGE_ROLES): return await ctx.send(embed=make_embed("no permission", "you need the configured moderation role or Administrator."))
+    if not bot_can(ctx, "manage_channels"): return await ctx.send(embed=make_embed("bot permission missing", "I need **Manage Channels** permission to lock this channel."))
+    try: await ctx.channel.set_permissions(ctx.guild.default_role,send_messages=False)
+    except discord.Forbidden: return await ctx.send(embed=make_embed("lock failed", "Discord denied the action. Check my **Manage Channels** permission."))
+    await ctx.send(embed=result_embed("Channel Locked", "Channel", ctx.channel.mention, extra=[("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["ul"])
 async def unlock(ctx):
-    if not role_ok(ctx.author,PURGE_ROLES): return await ctx.send(embed=make_embed("no permission", "you don't have the required moderation role."))
-    await ctx.channel.set_permissions(ctx.guild.default_role,send_messages=None); await ctx.send(embed=make_embed("unlocked",f"{ctx.channel.mention} is now unlocked."))
+    if not role_ok(ctx.author,PURGE_ROLES): return await ctx.send(embed=make_embed("no permission", "you need the configured moderation role or Administrator."))
+    if not bot_can(ctx, "manage_channels"): return await ctx.send(embed=make_embed("bot permission missing", "I need **Manage Channels** permission to unlock this channel."))
+    try: await ctx.channel.set_permissions(ctx.guild.default_role,send_messages=None)
+    except discord.Forbidden: return await ctx.send(embed=make_embed("unlock failed", "Discord denied the action. Check my **Manage Channels** permission."))
+    await ctx.send(embed=result_embed("Channel Unlocked", "Channel", ctx.channel.mention, extra=[("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["s"])
 async def snipe(ctx):
@@ -1234,6 +1327,28 @@ async def remind(ctx, duration: str, *, message: str):
         await ctx.author.send(embed=make_embed("⏰ reminder", message))
     except discord.HTTPException:
         await ctx.channel.send(ctx.author.mention, embed=make_embed("⏰ reminder", message))
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.MissingRequiredArgument):
+        return await ctx.send(embed=make_embed("missing argument", f"Use `{PREFIX}help {ctx.command.qualified_name}` for the correct syntax."))
+    if isinstance(error, commands.BadArgument):
+        return await ctx.send(embed=make_embed("invalid argument", f"I couldn't find that member, role, channel, or number. Use `{PREFIX}help {ctx.command.qualified_name}`."))
+    if isinstance(error, commands.MissingPermissions):
+        return await ctx.send(embed=make_embed("no permission", "You don't have the Discord permission required for this command."))
+    if isinstance(error, commands.BotMissingPermissions):
+        return await ctx.send(embed=make_embed("bot permission missing", "I don't have the Discord permission required for this command."))
+    if isinstance(error, commands.CommandOnCooldown):
+        return await ctx.send(embed=make_embed("slow down", f"Try again <t:{int(time.time()+error.retry_after)}:R>."))
+    if isinstance(error, commands.CommandInvokeError):
+        original=error.original
+        print(f"Command error in {ctx.command}: {original!r}")
+        if isinstance(original, discord.Forbidden):
+            return await ctx.send(embed=make_embed("discord denied the action", "Check my permissions and make sure my bot role is high enough."))
+        return await ctx.send(embed=make_embed("command failed", "Something went wrong while running that command. Check the console for details."))
+    print(f"Unhandled command error in {ctx.command}: {error!r}")
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
