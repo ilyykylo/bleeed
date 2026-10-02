@@ -1,28 +1,41 @@
 import os, time, random, asyncio, json, re
+import aiohttp
 from collections import defaultdict, deque
 from datetime import timedelta, datetime, timezone
 import discord
 from discord.ext import commands
-from io import BytesIO
-
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    Image = ImageDraw = ImageFont = None
 
 PREFIX = ","
 COLOR = 0x000001
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-BAN_ROLE = 1541538650355929168
-MUTE_ROLES = {1541538650355929168, 1540101656824258771, 1535418806984384563, 1535419879493210254}
-WARN_ROLES = MUTE_ROLES
-KICK_ROLES = {1541538650355929168, 1535419879493210254}
-PURGE_ROLES = {1541538650355929168, 1535419879493210254}
+# Moderation role permissions
+# 1555623587879063613 -> warn, mute, ban, kick, purge, lock
+# 1555566558766436452 -> warn, mute
+# 1555566599417626776 -> warn, mute
+# 1555566624185258105 -> warn, mute, kick
+# 1555566658100273237 -> warn, mute, kick
+BAN_ROLE = 1555623587879063613
+MUTE_ROLES = {
+    1555623587879063613,
+    1555566558766436452,
+    1555566599417626776,
+    1555566624185258105,
+    1555566658100273237,
+}
+WARN_ROLES = set(MUTE_ROLES)
+KICK_ROLES = {
+    1555623587879063613,
+    1555566624185258105,
+    1555566658100273237,
+}
+PURGE_ROLES = {1555623587879063613}
+LOCK_ROLES = {1555623587879063613}
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 start_time = time.time()
@@ -39,6 +52,29 @@ welcome_config = defaultdict(lambda: {
     "thumbnail": "{user_avatar}",
 })
 WELCOME_CONFIG_FILE = "welcome_config.json"
+VANITY_CONFIG_FILE = "vanity_config.json"
+vanity_config = defaultdict(lambda: {"enabled": False, "role": None})
+
+def load_vanity_config():
+    try:
+        with open(VANITY_CONFIG_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for gid, cfg in raw.items():
+            vanity_config[int(gid)] = {
+                "enabled": bool(cfg.get("enabled", False)),
+                "role": int(cfg["role"]) if cfg.get("role") else None,
+            }
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+def save_vanity_config():
+    try:
+        with open(VANITY_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): dict(v) for k, v in vanity_config.items()}, f, indent=2)
+    except OSError as exc:
+        print(f"vanity config save failed: {exc}")
+
+load_vanity_config()
 
 def load_welcome_config():
     global welcome_config
@@ -106,258 +142,6 @@ def build_welcome_embed(member):
 
 load_welcome_config()
 
-
-QUOTE_FONT_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-]
-QUOTE_BOLD_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-]
-
-
-def _quote_font(size, bold=False):
-    if ImageFont is None:
-        return None
-    paths = QUOTE_BOLD_PATHS if bold else QUOTE_FONT_PATHS
-    for path in paths:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
-
-
-def _wrap_quote(draw, text, font, max_width):
-    words = text.split()
-    if not words:
-        return [""]
-    lines, current = [], ""
-    for word in words:
-        test = word if not current else current + " " + word
-        if draw.textbbox((0, 0), test, font=font)[2] <= max_width:
-            current = test
-            continue
-        if current:
-            lines.append(current)
-        # Break very long words so they never run off the card.
-        if draw.textbbox((0, 0), word, font=font)[2] <= max_width:
-            current = word
-            continue
-        chunk = ""
-        for char in word:
-            test_chunk = chunk + char
-            if draw.textbbox((0, 0), test_chunk, font=font)[2] <= max_width:
-                chunk = test_chunk
-            else:
-                if chunk:
-                    lines.append(chunk)
-                chunk = char
-        current = chunk
-    if current:
-        lines.append(current)
-    return lines or [""]
-
-
-def _fit_cover(image, size):
-    """Crop an image to fill size while keeping its aspect ratio."""
-    target_w, target_h = size
-    image = image.convert("RGB")
-    ratio = max(target_w / image.width, target_h / image.height)
-    new_size = (max(1, int(image.width * ratio)), max(1, int(image.height * ratio)))
-    image = image.resize(new_size, Image.Resampling.LANCZOS)
-    left = max(0, (image.width - target_w) // 2)
-    top = max(0, (image.height - target_h) // 2)
-    return image.crop((left, top, left + target_w, top + target_h))
-
-
-async def _download_quote_visual(message):
-    """Return the first useful image from the quoted message, or its avatar."""
-    import aiohttp
-
-    async with aiohttp.ClientSession() as session:
-        # Prefer an image attachment because that matches the meme/quote style.
-        for attachment in message.attachments:
-            content_type = (attachment.content_type or "").lower()
-            if content_type.startswith("image/") or re.search(r"\.(png|jpe?g|webp|gif)$", attachment.filename, re.I):
-                try:
-                    async with session.get(attachment.url, timeout=10) as resp:
-                        if resp.status == 200:
-                            raw = await resp.read()
-                            return Image.open(BytesIO(raw)).convert("RGB")
-                except Exception:
-                    pass
-
-        # If the message has an image embed, use that next.
-        for embed in message.embeds:
-            image_url = getattr(getattr(embed, "image", None), "url", None)
-            if image_url:
-                try:
-                    async with session.get(str(image_url), timeout=10) as resp:
-                        if resp.status == 200:
-                            return Image.open(BytesIO(await resp.read())).convert("RGB")
-                except Exception:
-                    pass
-
-        # Otherwise use the author's profile picture.
-        try:
-            url = str(message.author.display_avatar.replace(size=512))
-            async with session.get(url, timeout=10) as resp:
-                if resp.status == 200:
-                    return Image.open(BytesIO(await resp.read())).convert("RGB")
-        except Exception:
-            pass
-
-    return None
-
-
-async def _quote_data(message):
-    text = (message.content or "").strip()
-    if not text:
-        text = "[attachment / embed / non-text message]"
-    if len(text) > 1200:
-        text = text[:1197] + "..."
-    visual = await _download_quote_visual(message)
-    return {
-        "text": text,
-        "visual": visual,
-        "display_name": message.author.display_name[:40],
-        "username": message.author.name[:40],
-        "server": (message.guild.name if message.guild else "Discord")[:60],
-    }
-
-
-def _render_quote_frame(data, motion=0.0):
-    """Render the quote card to closely match the supplied 1200x600 reference."""
-    width, height = 1200, 600
-    left_width = 588
-    right_width = width - left_width
-
-    # The reference is a hard split: grayscale image on the left, almost-black
-    # quote panel on the right. No rounded card, no title, and no UI labels.
-    image = Image.new("RGB", (width, height), (3, 6, 9))
-
-    visual = data["visual"]
-    if visual is None:
-        visual = Image.new("RGB", (left_width, height), (38, 39, 42))
-    else:
-        # Animate only the source image for GIF mode, keeping the composition fixed.
-        zoom = 1.0 + abs(motion) * 0.045
-        scaled_w = max(left_width, int(visual.width * zoom))
-        scaled_h = max(height, int(visual.height * zoom))
-        visual = visual.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
-        visual = _fit_cover(visual, (left_width, height))
-        visual = visual.convert("L").convert("RGB")
-        # Match the slightly washed/low-contrast monochrome look in the example.
-        visual = Image.eval(visual, lambda px: max(0, min(255, int(128 + (px - 128) * 0.82))))
-
-    # Tiny horizontal movement for the GIF, with the same full-height crop.
-    if motion and visual.width == left_width:
-        pass
-    image.paste(visual, (0, 0))
-
-    # Near-black right panel, matching the reference split.
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((left_width, 0, width, height), fill=(3, 6, 9))
-
-    # Reference-like typography: large centered white quote, then italic name
-    # and smaller gray handle beneath it.
-    quote_font = _quote_font(45, False)
-    name_font = _quote_font(25, False)
-    handle_font = _quote_font(20, False)
-    watermark_font = _quote_font(16, False)
-
-    quote_lines = _wrap_quote(draw, data["text"], quote_font, 500)
-    line_height = 52
-    total_h = len(quote_lines) * line_height
-    quote_start = max(115, int((height - total_h) / 2) - 25)
-
-    # Center every line as in the reference. No quotation marks or labels.
-    y = quote_start
-    for line in quote_lines:
-        bbox = draw.textbbox((0, 0), line, font=quote_font)
-        line_w = bbox[2] - bbox[0]
-        x = left_width + (right_width - line_w) / 2
-        x += motion * 0.8
-        draw.text((x, y), line, font=quote_font, fill=(247, 247, 248))
-        y += line_height
-
-    # Name/username are deliberately plain: the message author is represented
-    # by the actual values, not by literal "user", "pfp", etc.
-    display_name = data["display_name"]
-    handle = f"@{data['username']}"
-    name_bbox = draw.textbbox((0, 0), display_name, font=name_font)
-    handle_bbox = draw.textbbox((0, 0), handle, font=handle_font)
-    name_w = name_bbox[2] - name_bbox[0]
-    handle_w = handle_bbox[2] - handle_bbox[0]
-    author_y = min(390, y + 28)
-    draw.text(
-        (left_width + (right_width - name_w) / 2, author_y),
-        display_name,
-        font=name_font,
-        fill=(224, 224, 226),
-    )
-    draw.text(
-        (left_width + (right_width - handle_w) / 2, author_y + 32),
-        handle,
-        font=handle_font,
-        fill=(120, 122, 126),
-    )
-
-    # Small creator/bot watermark in the same bottom-right position as the example.
-    watermark = f"bleeed • {data['server']}"
-    wb = draw.textbbox((0, 0), watermark, font=watermark_font)
-    draw.text(
-        (width - 20 - (wb[2] - wb[0]), height - 30),
-        watermark,
-        font=watermark_font,
-        fill=(105, 107, 111),
-    )
-    return image
-
-
-async def make_quote_image(message):
-    if Image is None:
-        raise RuntimeError("Pillow is not installed")
-    data = await _quote_data(message)
-    image = _render_quote_frame(data)
-    out = BytesIO()
-    image.save(out, format="PNG", optimize=True)
-    out.seek(0)
-    return out
-
-
-async def make_quote_gif(message):
-    if Image is None:
-        raise RuntimeError("Pillow is not installed")
-    data = await _quote_data(message)
-    frames = []
-    # Gentle back-and-forth zoom/pan; it stays readable instead of being flashy.
-    motions = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25, 0.0, -0.25, -0.5, -0.75]
-    for motion in motions:
-        frame = _render_quote_frame(data, motion=motion).convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
-        frames.append(frame)
-    out = BytesIO()
-    frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:], duration=90, loop=0, disposal=2, optimize=False)
-    out.seek(0)
-    return out
-
-
-class QuoteView(discord.ui.View):
-    def __init__(self, quoted_message, author_id):
-        super().__init__(timeout=300)
-        self.quoted_message = quoted_message
-        self.author_id = author_id
-
-    @discord.ui.button(label="make gif", style=discord.ButtonStyle.secondary)
-    async def make_gif(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Let anyone viewing the quote make the GIF; no permission is required.
-        await interaction.response.defer()
-        try:
-            gif = await make_quote_gif(self.quoted_message)
-            await interaction.followup.send(file=discord.File(gif, filename="quote.gif"))
-        except Exception as exc:
-            print(f"quote gif generation failed: {exc}")
-            await interaction.followup.send("i couldn't make that quote a gif right now.", ephemeral=True)
 
 boost_roles = {}
 autoresponders = defaultdict(dict)
@@ -453,7 +237,6 @@ COMMAND_INFO = {
     "guildicon": ("Show the server icon.", "guildicon", "guildicon", []),
     "boost": ("Show the server boost count.", "boost", "boost", []),
     "welcome": ("Configure and customize welcome embeds.", "welcome <channel|title|description|color|image|thumbnail|preview|reset>", "welcome title Welcome to {server}!", []),
-    "quote": ("Turn a replied-to message into a quote image.", "quote", "reply to a message, then use ,quote", ["q"]),
     "disablewelcome": ("Disable welcome messages.", "disablewelcome", "disablewelcome", []),
     "booster": ("Configure the automatic booster role.", "booster [role]", "booster @Booster", []),
     "boosterremove": ("Remove the automatic booster role.", "boosterremove", "boosterremove", ["booster-off"]),
@@ -512,6 +295,9 @@ COMMAND_INFO = {
     "nick": ("Change a member's nickname.", "nick <member> [nickname]", "nick @user New Name", []),
     "addrole": ("Give a role to a member.", "addrole <member> <role>", "addrole @user @VIP", []),
     "removerole": ("Remove a role from a member.", "removerole <member> <role>", "removerole @user @VIP", []),
+    "vanity": ("Give a configured role to members who put /bleeed in their custom status.", "vanity [role|off|status]", "vanity @bleeed", []),
+    "deleterole": ("Delete a server role.", "deleterole <role>", "deleterole @OldRole", ["delrole", "roledelete"]),
+    "changerole": ("Change a role's name, color, icon, hoist, or mentionable setting.", "changerole <role> <changes>", "changerole @VIP name=VIP color=#efcead icon=⭐", ["editrole", "rolechange"]),
     "create": ("Create a server role, text channel, or voice channel.", "create <role|channel|vc> <name>", "create role VIP", []),
     "create role": ("Create a new server role.", "create role <name>", "create role VIP", []),
     "create channel": ("Create a new text channel.", "create channel <name>", "create channel general", []),
@@ -534,12 +320,14 @@ COMMAND_INFO.update({
 })
 
 CATEGORIES = [
-    ("Information", ["afk", "avatar", "banner", "botinfo", "channelinfo", "commands", "emojis", "firstmessage", "guildicon", "help", "inviteinfo", "invites", "membercount", "permissions", "quote", "roleinfo", "roles", "servericon", "serverinfo", "serverstats", "stickers", "userinfo", "voiceinfo"]),
-    ("Server", ["ar", "autorole", "autoreact", "booster", "boosterremove", "boost", "filter", "welcome", "disablewelcome", "poll", "ticket", "close", "giveaway", "gaw", "announce", "create", "remind"]),
-    ("Security", ["antinuke", "antiraid", "security"]),
-    ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "unwarn", "clearwarnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "addrole", "removerole", "topic", "say"]),
+    ("Information", ["help", "commands", "ping", "uptime", "avatar", "banner", "botinfo", "userinfo", "serverinfo", "channelinfo", "roleinfo", "membercount", "roles", "emojis", "stickers", "permissions", "guildicon", "servericon", "boost", "serverstats", "firstmessage", "invites", "inviteinfo", "voiceinfo"]),
+    ("Server", ["welcome", "disablewelcome", "booster", "boosterremove", "ar", "autorole", "autoreact", "poll", "ticket", "close", "giveaway", "gaw", "announce", "remind", "vanity"]),
+    ("Roles", ["addrole", "removerole", "deleterole", "changerole", "create", "create role", "create channel", "create vc"]),
+    ("Security", ["antinuke", "antiraid", "filter", "security"]),
+    ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "unwarn", "clearwarnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "topic", "say"]),
     ("Fun", ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "wyr", "mock", "reverse", "truth", "dare", "wouldyou"]),
     ("Social", ["hug", "pat", "slap", "love", "simp", "gayrate", "howlucky", "ship", "shipname", "roast", "compliment"]),
+    ("Utility", ["afk"]),
 ]
 
 
@@ -548,14 +336,29 @@ def command_text(name):
 
 
 def build_pages():
-    page_groups = [["Information", "Server"], ["Security", "Moderation"], ["Fun", "Social"]]
+    # Keep every documented command visible. Anything added later that is not
+    # assigned to a category automatically appears on the final page.
     lookup = dict(CATEGORIES)
+    page_groups = [
+        ["Information", "Server"],
+        ["Roles", "Security"],
+        ["Moderation"],
+        ["Fun", "Social", "Utility"],
+    ]
+    used = set()
     pages = []
     for group in page_groups:
         blocks = []
         for title in group:
-            blocks.append(f"# {title}\n" + " ".join(command_text(name) for name in lookup[title]))
+            names = [name for name in lookup.get(title, []) if name in COMMAND_INFO]
+            used.update(names)
+            if names:
+                blocks.append(f"# {title}\n" + " ".join(command_text(name) for name in names))
         pages.append("\n\n".join(blocks))
+
+    leftovers = [name for name in COMMAND_INFO if name not in used]
+    if leftovers:
+        pages.append("# More\n" + " ".join(command_text(name) for name in leftovers))
     return pages
 
 
@@ -658,6 +461,38 @@ async def on_member_update(before, after):
                 except discord.HTTPException: pass
         if after.guild.system_channel:
             await after.guild.system_channel.send(embed=make_embed("boost", f"thank you {after.mention} for boosting **{after.guild.name}**! ♡"))
+
+
+def vanity_status_active(member):
+    """Return True when /bleeed appears in the member's custom status."""
+    for activity in getattr(member, "activities", ()):
+        if isinstance(activity, discord.CustomActivity):
+            text = str(getattr(activity, "state", "") or "")
+            if "/bleeed" in text.lower():
+                return True
+    return False
+
+
+@bot.event
+async def on_presence_update(before, after):
+    cfg = vanity_config.get(after.guild.id, {"enabled": False, "role": None})
+    if not cfg.get("enabled") or not cfg.get("role"):
+        return
+
+    role = after.guild.get_role(int(cfg["role"]))
+    me = after.guild.me
+    if not role or not me or role >= me.top_role or role.is_default() or role.managed:
+        return
+
+    active = vanity_status_active(after)
+    has_role = role in after.roles
+    try:
+        if active and not has_role:
+            await after.add_roles(role, reason="bleeed vanity status: /bleeed")
+        elif not active and has_role:
+            await after.remove_roles(role, reason="bleeed vanity status removed")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 @bot.event
@@ -1082,27 +917,6 @@ async def boost(ctx):
     ])
     await ctx.send(embed=e)
 
-@bot.hybrid_command(name="quote", aliases=["q"], description="Turn a replied-to message into a quote image.")
-async def quote(ctx):
-    reference = getattr(ctx.message, "reference", None)
-    if not reference or not reference.message_id:
-        return await ctx.send(embed=make_embed("quote", f"reply to a message first, then use `{PREFIX}quote`."))
-
-    try:
-        quoted = reference.resolved if isinstance(reference.resolved, discord.Message) else None
-        if quoted is None:
-            quoted = await ctx.channel.fetch_message(reference.message_id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        return await ctx.send(embed=make_embed("quote", "i couldn't fetch the message you replied to."))
-
-    try:
-        image = await make_quote_image(quoted)
-        view = QuoteView(quoted, ctx.author.id)
-        await ctx.send(file=discord.File(image, filename="quote.png"), view=view)
-    except Exception as exc:
-        print(f"quote generation failed: {exc}")
-        await ctx.send(embed=make_embed("quote", "i couldn't generate that quote image right now."))
-
 @bot.command()
 async def welcome(ctx, action=None, *, value=""):
 
@@ -1383,7 +1197,7 @@ async def purge(ctx,amount:int=10):
 @bot.command(aliases=["l"])
 async def lock(ctx):
     # Lock/unlock are intentionally silent for users without moderation access.
-    if not role_ok(ctx.author, PURGE_ROLES):
+    if not role_ok(ctx.author, LOCK_ROLES):
         return
     if not bot_can(ctx, "manage_channels"):
         return
@@ -1399,7 +1213,7 @@ async def lock(ctx):
 @bot.command(aliases=["ul"])
 async def unlock(ctx):
     # Lock/unlock are intentionally silent for users without moderation access.
-    if not role_ok(ctx.author, PURGE_ROLES):
+    if not role_ok(ctx.author, LOCK_ROLES):
         return
     if not bot_can(ctx, "manage_channels"):
         return
@@ -1819,8 +1633,164 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
     await ctx.send(embed=make_embed("role removed", f"removed {role.mention} from {member.mention}."))
 
 
+@bot.hybrid_command(name="deleterole", aliases=["delrole", "roledelete"], description="Delete a server role.")
+@commands.has_permissions(manage_roles=True)
+async def deleterole(ctx, role: discord.Role):
+    """Delete a role the caller and bot can manage."""
+    if role.is_default() or role.managed:
+        return await ctx.send(embed=make_embed("delete role", "that role cannot be deleted."))
+    if role >= ctx.guild.me.top_role:
+        return await ctx.send(embed=make_embed("delete role", "my highest role must be above that role."))
+    if not ctx.author.guild_permissions.administrator and role >= ctx.author.top_role:
+        return await ctx.send(embed=make_embed("delete role", "your highest role must be above that role."))
+    role_name = role.name
+    role_id = role.id
+    try:
+        await role.delete(reason=f"role deleted by {ctx.author}")
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("delete role", "Discord denied deleting that role."))
+    await ctx.send(embed=make_embed("role deleted", f"**Name**\n`{role_name}`\n\n**ID**\n`{role_id}`\n\n**Deleted By**\n{ctx.author.mention}"))
+
+
+def parse_role_changes(raw):
+    pattern = re.compile(r"(?i)(name|color|colour|icon|hoist|mentionable)\s*=")
+    matches = list(pattern.finditer(raw))
+    if not matches:
+        return {}
+    result = {}
+    for i, match in enumerate(matches):
+        key = match.group(1).lower()
+        key = "color" if key == "colour" else key
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+        value = raw[match.end():end].strip().strip('"').strip("'")
+        if value:
+            result[key] = value
+    return result
+
+
+@bot.hybrid_command(name="changerole", aliases=["editrole", "rolechange"], description="Change a role's settings.")
+@commands.has_permissions(manage_roles=True)
+async def changerole(ctx, role: discord.Role, *, changes: str):
+    """Change role name, color, icon, hoist, or mentionable state."""
+    if role.is_default() or role.managed:
+        return await ctx.send(embed=make_embed("change role", "that role cannot be edited."))
+    if role >= ctx.guild.me.top_role:
+        return await ctx.send(embed=make_embed("change role", "my highest role must be above that role."))
+    if not ctx.author.guild_permissions.administrator and role >= ctx.author.top_role:
+        return await ctx.send(embed=make_embed("change role", "your highest role must be above that role."))
+
+    changes_map = parse_role_changes(changes)
+    if not changes_map:
+        return await ctx.send(embed=make_embed("change role", f"use `{PREFIX}changerole @role name=VIP color=#efcead icon=⭐ hoist=true mentionable=true`"))
+
+    kwargs = {}
+    changed = []
+    if "name" in changes_map:
+        name = changes_map["name"][:100]
+        if not name:
+            return await ctx.send(embed=make_embed("change role", "the role name cannot be empty."))
+        kwargs["name"] = name
+        changed.append("name")
+    if "color" in changes_map:
+        color = parse_color(changes_map["color"])
+        if color is None:
+            return await ctx.send(embed=make_embed("change role", "color must look like `#efcead` or `efcead`."))
+        kwargs["color"] = color
+        changed.append("color")
+    for key in ("hoist", "mentionable"):
+        if key in changes_map:
+            value = changes_map[key].lower()
+            if value not in {"true", "false", "yes", "no", "on", "off"}:
+                return await ctx.send(embed=make_embed("change role", f"`{key}` must be `true` or `false`."))
+            kwargs[key] = value in {"true", "yes", "on"}
+            changed.append(key)
+    if "icon" in changes_map:
+        icon_value = changes_map["icon"]
+        if icon_value.lower() in {"none", "remove", "off"}:
+            kwargs["display_icon"] = None
+        elif re.match(r"^https?://", icon_value, re.I):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(icon_value, timeout=10) as resp:
+                        if resp.status != 200:
+                            return await ctx.send(embed=make_embed("change role", "i couldn't download that icon."))
+                        icon_bytes = await resp.read()
+                if len(icon_bytes) > 256 * 1024:
+                    return await ctx.send(embed=make_embed("change role", "that icon file is too large."))
+                kwargs["display_icon"] = icon_bytes
+            except Exception:
+                return await ctx.send(embed=make_embed("change role", "i couldn't download that icon."))
+        else:
+            kwargs["display_icon"] = icon_value
+        changed.append("icon")
+
+    try:
+        edited = await role.edit(**kwargs, reason=f"role changed by {ctx.author}")
+    except ValueError as exc:
+        return await ctx.send(embed=make_embed("change role", f"invalid role setting: `{exc}`"))
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("change role", "Discord denied editing that role. Check role hierarchy and whether this server supports role icons."))
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("change role", "Discord couldn't edit that role."))
+
+    await ctx.send(embed=make_embed(
+        "role changed",
+        f"**Role**\n{edited.mention} · `{edited.id}`\n\n**Changed**\n`{', '.join(changed)}`\n\n**Changed By**\n{ctx.author.mention}"
+    ))
+
+
+@bot.hybrid_command(name="vanity", description="Configure the /bleeed custom-status role.")
+@commands.has_permissions(manage_roles=True)
+async def vanity(ctx, target: str = None):
+    """Configure the role given to members whose custom status contains /bleeed."""
+    cfg = vanity_config[ctx.guild.id]
+    raw = (target or "").strip()
+    lowered = raw.lower()
+
+    if lowered in {"off", "disable", "remove"}:
+        cfg["enabled"] = False
+        cfg["role"] = None
+        save_vanity_config()
+        return await ctx.send(embed=make_embed("vanity disabled", "the `/bleeed` status role is disabled."))
+
+    if lowered in {"status", "settings"}:
+        configured = ctx.guild.get_role(cfg.get("role")) if cfg.get("role") else None
+        return await ctx.send(embed=make_embed(
+            "vanity settings",
+            f"**Trigger**\n`/bleeed`\n\n**Role**\n{configured.mention if configured else 'not configured'}\n\n**Enabled**\n`{'yes' if cfg.get('enabled') and configured else 'no'}`"
+        ))
+
+    if not raw:
+        return await ctx.send(embed=make_embed("vanity", f"use `{PREFIX}vanity @role` to set the role, `{PREFIX}vanity off` to disable it, or `{PREFIX}vanity status` to view it."))
+
+    role = None
+    message_obj = getattr(ctx, "message", None)
+    if message_obj is not None and getattr(message_obj, "role_mentions", None):
+        role = message_obj.role_mentions[0]
+    if role is None:
+        match = re.fullmatch(r"<@&(\d+)>", raw)
+        if match:
+            role = ctx.guild.get_role(int(match.group(1)))
+    if role is None and raw.isdigit():
+        role = ctx.guild.get_role(int(raw))
+    if role is None:
+        role = discord.utils.find(lambda r: r.name.lower() == raw.lower(), ctx.guild.roles)
+
+    if role is None:
+        return await ctx.send(embed=make_embed("vanity", "i couldn't find that role. Mention it, use its ID, or use its exact name."))
+    if role.is_default() or role.managed or role >= ctx.guild.me.top_role:
+        return await ctx.send(embed=make_embed("vanity", "that role must be a normal role below my highest role."))
+
+    cfg["enabled"] = True
+    cfg["role"] = role.id
+    save_vanity_config()
+    await ctx.send(embed=make_embed(
+        "vanity enabled",
+        f"members with `/bleeed` in their custom status will receive {role.mention}.\n\nremove `/bleeed` from their status and bleeed will remove the role."
+    ))
+
+
 @bot.hybrid_group(name="create", invoke_without_command=True)
-@commands.has_permissions(manage_channels=True)
 async def create(ctx):
     """Create a server role, text channel, or voice channel."""
     await ctx.send(embed=make_embed(
