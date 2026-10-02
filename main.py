@@ -53,17 +53,64 @@ welcome_config = defaultdict(lambda: {
 })
 WELCOME_CONFIG_FILE = "welcome_config.json"
 VANITY_CONFIG_FILE = "vanity_config.json"
-vanity_config = defaultdict(lambda: {"enabled": False, "role": None})
+vanity_config = defaultdict(lambda: {
+    "enabled": False,
+    "role": None,
+    "title": "Vanity Unlocked!",
+    "description": "{user} has `/bleeed` in their status and received {role}!",
+    "color": "#000001",
+    "image": None,
+    "thumbnail": "{user_avatar}",
+})
+AUTOROLE_CONFIG_FILE = "autorole_config.json"
+AUTOREACT_CONFIG_FILE = "autoreact_config.json"
+
+def _save_json_file(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except OSError as exc:
+        print(f"config save failed for {path}: {exc}")
+
+def load_autorole_config():
+    try:
+        with open(AUTOROLE_CONFIG_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for gid, rid in raw.items():
+            autoroles[int(gid)] = int(rid) if rid else None
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+def save_autorole_config():
+    _save_json_file(AUTOROLE_CONFIG_FILE, {str(k): v for k, v in autoroles.items()})
+
+def load_autoreact_config():
+    try:
+        with open(AUTOREACT_CONFIG_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for gid, rules in raw.items():
+            autoreacts[int(gid)] = {
+                str(trigger): list(emojis) for trigger, emojis in (rules or {}).items()
+            }
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+def save_autoreact_config():
+    _save_json_file(AUTOREACT_CONFIG_FILE, {
+        str(gid): {str(trigger): list(emojis) for trigger, emojis in rules.items()}
+        for gid, rules in autoreacts.items()
+    })
 
 def load_vanity_config():
     try:
         with open(VANITY_CONFIG_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
         for gid, cfg in raw.items():
-            vanity_config[int(gid)] = {
-                "enabled": bool(cfg.get("enabled", False)),
-                "role": int(cfg["role"]) if cfg.get("role") else None,
-            }
+            base = dict(vanity_config[int(gid)])
+            base.update(cfg or {})
+            base["enabled"] = bool(base.get("enabled", False))
+            base["role"] = int(base["role"]) if base.get("role") else None
+            vanity_config[int(gid)] = base
     except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
         pass
 
@@ -155,6 +202,9 @@ filter_enabled = defaultdict(bool)
 tickets = {}
 giveaways = {}
 reminders = {}
+
+load_autorole_config()
+load_autoreact_config()
 
 
 def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
@@ -420,6 +470,10 @@ async def on_ready():
     except Exception as exc:
         print(f"slash sync failed: {exc}")
     print(f"bleeed online as {bot.user} ({bot.user.id})")
+    try:
+        await sync_all_vanity()
+    except Exception as exc:
+        print(f"initial vanity sync failed: {exc}")
 
 
 @bot.event
@@ -463,6 +517,48 @@ async def on_member_update(before, after):
             await after.guild.system_channel.send(embed=make_embed("boost", f"thank you {after.mention} for boosting **{after.guild.name}**! ♡"))
 
 
+def vanity_replace(text, member, role=None):
+    if text is None:
+        return None
+    role_mention = role.mention if role else (f"<@&{getattr(role, 'id', 0)}>" if role else "")
+    replacements = {
+        "{user}": member.mention,
+        "{mention}": member.mention,
+        "{username}": member.name,
+        "{displayname}": member.display_name,
+        "{server}": member.guild.name,
+        "{membercount}": str(member.guild.member_count or len(member.guild.members)),
+        "{id}": str(member.id),
+        "{user_id}": str(member.id),
+        "{role}": role_mention,
+        "{role_name}": role.name if role else "",
+    }
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    return text
+
+def build_vanity_embed(member):
+    cfg = vanity_config[member.guild.id]
+    role = member.guild.get_role(cfg.get("role")) if cfg.get("role") else None
+    try:
+        color = int(str(cfg.get("color", "#000001")).replace("#", ""), 16)
+    except ValueError:
+        color = COLOR
+    e = discord.Embed(
+        title=vanity_replace(cfg.get("title", "Vanity Unlocked!"), member, role),
+        description=vanity_replace(cfg.get("description", "{user} has `/bleeed` in their status and received {role}!"), member, role),
+        color=color,
+    )
+    image = cfg.get("image")
+    thumbnail = cfg.get("thumbnail")
+    if image:
+        e.set_image(url=vanity_replace(image, member, role))
+    if thumbnail:
+        thumb_url = member.display_avatar.url if thumbnail == "{user_avatar}" else vanity_replace(thumbnail, member, role)
+        if thumb_url:
+            e.set_thumbnail(url=thumb_url)
+    return e
+
 def vanity_status_active(member):
     """Return True when /bleeed appears in the member's custom status."""
     for activity in getattr(member, "activities", ()):
@@ -475,25 +571,45 @@ def vanity_status_active(member):
 
 @bot.event
 async def on_presence_update(before, after):
-    cfg = vanity_config.get(after.guild.id, {"enabled": False, "role": None})
+    try:
+        await sync_vanity_member(after)
+    except Exception as exc:
+        print(f"presence handler failed in {after.guild.id}/{after.id}: {exc}")
+
+
+async def sync_vanity_member(member):
+    cfg = vanity_config.get(member.guild.id, {"enabled": False, "role": None})
     if not cfg.get("enabled") or not cfg.get("role"):
         return
-
-    role = after.guild.get_role(int(cfg["role"]))
-    me = after.guild.me
+    role = member.guild.get_role(int(cfg["role"]))
+    me = member.guild.me
     if not role or not me or role >= me.top_role or role.is_default() or role.managed:
         return
-
-    active = vanity_status_active(after)
-    has_role = role in after.roles
+    active = vanity_status_active(member)
+    has_role = role in member.roles
     try:
         if active and not has_role:
-            await after.add_roles(role, reason="bleeed vanity status: /bleeed")
+            await member.add_roles(role, reason="bleeed vanity status: /bleeed")
         elif not active and has_role:
-            await after.remove_roles(role, reason="bleeed vanity status removed")
-    except (discord.Forbidden, discord.HTTPException):
-        pass
+            await member.remove_roles(role, reason="bleeed vanity status removed")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"vanity role sync failed in {member.guild.id}/{member.id}: {exc}")
 
+async def sync_all_vanity():
+    for guild in bot.guilds:
+        cfg = vanity_config.get(guild.id)
+        if not cfg or not cfg.get("enabled") or not cfg.get("role"):
+            continue
+        for member in list(guild.members):
+            try:
+                await sync_vanity_member(member)
+            except Exception as exc:
+                print(f"vanity sync error in {guild.id}/{member.id}: {exc}")
+
+@bot.event
+async def on_resumed():
+    print("discord session resumed")
+    await sync_all_vanity()
 
 @bot.event
 async def on_message_delete(message):
@@ -563,10 +679,15 @@ async def on_message(message):
             return
         if content in autoreacts[message.guild.id]:
             for reaction in autoreacts[message.guild.id][content][:3]:
-                try: await message.add_reaction(reaction)
-                except discord.HTTPException: pass
+                try:
+                    await message.add_reaction(reaction)
+                except (discord.HTTPException, discord.Forbidden) as exc:
+                    print(f"autoreact failed in {message.guild.id}: {exc}")
         if content in autoresponders[message.guild.id]:
-            await message.channel.send(autoresponders[message.guild.id][content])
+            try:
+                await message.channel.send(autoresponders[message.guild.id][content])
+            except (discord.HTTPException, discord.Forbidden) as exc:
+                print(f"autoresponder failed in {message.guild.id}: {exc}")
     if message.author.id in afk_data and not content.startswith(PREFIX):
         afk_data.pop(message.author.id, None)
         await message.channel.send(embed=make_embed("afk removed", f"welcome back {message.author.mention}! your AFK has been removed."), delete_after=5)
@@ -1054,8 +1175,8 @@ async def ar(ctx, action="list", *, data=""):
     if action=="add":
         if "|" not in data: return await ctx.send(embed=make_embed("autoresponder", f"usage: `{PREFIX}ar add trigger | response`"))
         t,r=[x.strip() for x in data.split("|",1)]; d[t.lower()]=r; return await ctx.send(embed=make_embed("autoresponder added", f"`{t}` → {r}"))
-    if action=="remove": d.pop(data.lower().strip(),None); return await ctx.send(embed=make_embed("autoresponder removed", f"removed `{data}`."))
-    if action=="clear": d.clear(); return await ctx.send(embed=make_embed("autoresponders cleared", "all autoresponders were removed."))
+    if action=="remove": d.pop(data.lower().strip(),None); save_autoreact_config(); return await ctx.send(embed=make_embed("autoresponder removed", f"removed `{data}`."))
+    if action=="clear": d.clear(); save_autoreact_config(); return await ctx.send(embed=make_embed("autoresponders cleared", "all autoresponders were removed."))
     text="\n".join(f"`{k}` → {v}" for k,v in d.items()) or "no autoresponders are configured."; await ctx.send(embed=make_embed("autoresponders", text))
 
 @bot.command()
@@ -1064,7 +1185,7 @@ async def autorole(ctx, role: discord.Role=None):
         rid=autoroles.get(ctx.guild.id); return await ctx.send(embed=make_embed("autorole", f"{ctx.guild.get_role(rid).mention if rid and ctx.guild.get_role(rid) else 'not configured'}"))
     if not has_manage(ctx): return await ctx.send(embed=make_embed("no permission", "you need Manage Server."))
     if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("error", "my role must be above that role."))
-    autoroles[ctx.guild.id]=role.id; await ctx.send(embed=make_embed("autorole set", f"new members will receive {role.mention}."))
+    autoroles[ctx.guild.id]=role.id; save_autorole_config(); await ctx.send(embed=make_embed("autorole set", f"new members will receive {role.mention}."))
 
 @bot.command()
 async def autoreact(ctx, action="list", *, data=""):
@@ -1072,7 +1193,7 @@ async def autoreact(ctx, action="list", *, data=""):
     d=autoreacts[ctx.guild.id]
     if action=="add":
         if "|" not in data: return await ctx.send(embed=make_embed("autoreact", f"usage: `{PREFIX}autoreact add trigger | emoji`"))
-        t,e=[x.strip() for x in data.split("|",1)]; d.setdefault(t.lower(),[]).append(e); return await ctx.send(embed=make_embed("autoreact added", f"`{t}` → {e}"))
+        t,e=[x.strip() for x in data.split("|",1)]; d.setdefault(t.lower(),[]).append(e); save_autoreact_config(); return await ctx.send(embed=make_embed("autoreact added", f"`{t}` → {e}"))
     if action=="remove": d.pop(data.lower().strip(),None); return await ctx.send(embed=make_embed("autoreact removed", f"removed `{data}`."))
     if action=="clear": d.clear(); return await ctx.send(embed=make_embed("autoreacts cleared", "all automatic reactions were removed."))
     await ctx.send(embed=make_embed("autoreacts", "\n".join(f"`{k}` → {' '.join(v)}" for k,v in d.items()) or "none configured."))
@@ -1739,10 +1860,9 @@ async def changerole(ctx, role: discord.Role, *, changes: str):
     ))
 
 
-@bot.hybrid_command(name="vanity", description="Configure the /bleeed custom-status role.")
+@bot.hybrid_group(name="vanity", invoke_without_command=True, description="Configure the /bleeed custom-status role and embed.")
 @commands.has_permissions(manage_roles=True)
 async def vanity(ctx, target: str = None):
-    """Configure the role given to members whose custom status contains /bleeed."""
     cfg = vanity_config[ctx.guild.id]
     raw = (target or "").strip()
     lowered = raw.lower()
@@ -1757,11 +1877,27 @@ async def vanity(ctx, target: str = None):
         configured = ctx.guild.get_role(cfg.get("role")) if cfg.get("role") else None
         return await ctx.send(embed=make_embed(
             "vanity settings",
-            f"**Trigger**\n`/bleeed`\n\n**Role**\n{configured.mention if configured else 'not configured'}\n\n**Enabled**\n`{'yes' if cfg.get('enabled') and configured else 'no'}`"
+            f"**Trigger**\n`/bleeed`\n\n**Role**\n{configured.mention if configured else 'not configured'}\n\n"
+            f"**Enabled**\n`{'yes' if cfg.get('enabled') and configured else 'no'}`\n\n"
+            f"**Title**\n{cfg.get('title', 'Vanity Unlocked!')}\n\n"
+            f"**Description**\n{cfg.get('description', '')}\n\n"
+            f"**Color**\n`{cfg.get('color', '#000001')}`"
         ))
 
     if not raw:
-        return await ctx.send(embed=make_embed("vanity", f"use `{PREFIX}vanity @role` to set the role, `{PREFIX}vanity off` to disable it, or `{PREFIX}vanity status` to view it."))
+        return await ctx.send(embed=make_embed(
+            "vanity",
+            f"`{PREFIX}vanity @role` — set the role\n"
+            f"`{PREFIX}vanity title <text>` — edit title\n"
+            f"`{PREFIX}vanity description <text>` — edit description\n"
+            f"`{PREFIX}vanity color #hex` — edit color\n"
+            f"`{PREFIX}vanity image <url>` — edit image\n"
+            f"`{PREFIX}vanity thumbnail user` — use the member avatar\n"
+            f"`{PREFIX}vanity preview` — preview the embed\n"
+            f"`{PREFIX}vanity settings` — view settings\n"
+            f"`{PREFIX}vanity reset` — reset embed settings\n"
+            f"`{PREFIX}vanity off` — disable vanity"
+        ))
 
     role = None
     message_obj = getattr(ctx, "message", None)
@@ -1777,18 +1913,80 @@ async def vanity(ctx, target: str = None):
         role = discord.utils.find(lambda r: r.name.lower() == raw.lower(), ctx.guild.roles)
 
     if role is None:
-        return await ctx.send(embed=make_embed("vanity", "i couldn't find that role. Mention it, use its ID, or use its exact name."))
+        return await ctx.send(embed=make_embed("vanity", "i couldn't find that role. mention it, use its ID, or use its exact name."))
     if role.is_default() or role.managed or role >= ctx.guild.me.top_role:
         return await ctx.send(embed=make_embed("vanity", "that role must be a normal role below my highest role."))
 
     cfg["enabled"] = True
     cfg["role"] = role.id
     save_vanity_config()
-    await ctx.send(embed=make_embed(
+    return await ctx.send(embed=make_embed(
         "vanity enabled",
         f"members with `/bleeed` in their custom status will receive {role.mention}.\n\nremove `/bleeed` from their status and bleeed will remove the role."
     ))
 
+@vanity.command(name="title")
+async def vanity_title(ctx, *, text: str):
+    vanity_config[ctx.guild.id]["title"] = text
+    save_vanity_config()
+    await ctx.send(embed=make_embed("vanity title updated", f"**Title**\n{text}"))
+
+@vanity.command(name="description")
+async def vanity_description(ctx, *, text: str):
+    vanity_config[ctx.guild.id]["description"] = text
+    save_vanity_config()
+    await ctx.send(embed=make_embed("vanity description updated", f"**Description**\n{text}"))
+
+@vanity.command(name="color")
+async def vanity_color(ctx, color: str):
+    value = color.strip().replace("#", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", value):
+        return await ctx.send(embed=make_embed("vanity", "use a 6-digit hex color such as `#efcead`."))
+    vanity_config[ctx.guild.id]["color"] = f"#{value.lower()}"
+    save_vanity_config()
+    await ctx.send(embed=make_embed("vanity color updated", f"**Color**\n`#{value.lower()}`"))
+
+@vanity.command(name="image")
+async def vanity_image(ctx, url: str):
+    if url.lower() in {"off", "none", "remove"}:
+        vanity_config[ctx.guild.id]["image"] = None
+        save_vanity_config()
+        return await ctx.send(embed=make_embed("vanity image removed", "the vanity embed image has been removed."))
+    vanity_config[ctx.guild.id]["image"] = url
+    save_vanity_config()
+    await ctx.send(embed=make_embed("vanity image updated", url))
+
+@vanity.command(name="thumbnail")
+async def vanity_thumbnail(ctx, value: str = "user"):
+    if value.lower() in {"off", "none", "remove"}:
+        vanity_config[ctx.guild.id]["thumbnail"] = None
+    elif value.lower() == "user":
+        vanity_config[ctx.guild.id]["thumbnail"] = "{user_avatar}"
+    else:
+        vanity_config[ctx.guild.id]["thumbnail"] = value
+    save_vanity_config()
+    await ctx.send(embed=make_embed("vanity thumbnail updated", f"**Thumbnail**\n{value}"))
+
+@vanity.command(name="preview")
+async def vanity_preview(ctx):
+    member = ctx.author
+    role = ctx.guild.get_role(vanity_config[ctx.guild.id].get("role")) if vanity_config[ctx.guild.id].get("role") else None
+    if not role:
+        return await ctx.send(embed=make_embed("vanity preview", "set a vanity role first with `,vanity @role`."))
+    await ctx.send(embed=build_vanity_embed(member))
+
+@vanity.command(name="reset")
+async def vanity_reset(ctx):
+    cfg = vanity_config[ctx.guild.id]
+    cfg.update({
+        "title": "Vanity Unlocked!",
+        "description": "{user} has `/bleeed` in their status and received {role}!",
+        "color": "#000001",
+        "image": None,
+        "thumbnail": "{user_avatar}",
+    })
+    save_vanity_config()
+    await ctx.send(embed=make_embed("vanity reset", "the vanity embed has been restored to its defaults."))
 
 @bot.hybrid_group(name="create", invoke_without_command=True)
 async def create(ctx):
