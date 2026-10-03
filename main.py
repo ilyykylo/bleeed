@@ -56,6 +56,7 @@ VANITY_CONFIG_FILE = "vanity_config.json"
 vanity_config = defaultdict(lambda: {
     "enabled": False,
     "role": None,
+    "channel": None,
     "title": "Vanity Unlocked!",
     "description": "{user} has `/bleeed` in their status and received {role}!",
     "color": "#000001",
@@ -345,7 +346,7 @@ COMMAND_INFO = {
     "nick": ("Change a member's nickname.", "nick <member> [nickname]", "nick @user New Name", []),
     "addrole": ("Give a role to a member.", "addrole <member> <role>", "addrole @user @VIP", []),
     "removerole": ("Remove a role from a member.", "removerole <member> <role>", "removerole @user @VIP", []),
-    "vanity": ("Give a configured role to members who put /bleeed in their custom status.", "vanity [role|off|status]", "vanity @bleeed", []),
+    "vanity": ("Configure the /bleeed status role and its customizable embed.", "vanity [role|channel|title|description|color|image|thumbnail|preview|settings|reset|off]", "vanity channel #vanity", []),
     "deleterole": ("Delete a server role.", "deleterole <role>", "deleterole @OldRole", ["delrole", "roledelete"]),
     "changerole": ("Change a role's name, color, icon, hoist, or mentionable setting.", "changerole <role> <changes>", "changerole @VIP name=VIP color=#efcead icon=⭐", ["editrole", "rolechange"]),
     "create": ("Create a server role, text channel, or voice channel.", "create <role|channel|vc> <name>", "create role VIP", []),
@@ -590,6 +591,13 @@ async def sync_vanity_member(member):
     try:
         if active and not has_role:
             await member.add_roles(role, reason="bleeed vanity status: /bleeed")
+            channel_id = cfg.get("channel")
+            channel = member.guild.get_channel(int(channel_id)) if channel_id else None
+            if channel:
+                try:
+                    await channel.send(embed=build_vanity_embed(member))
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    print(f"vanity embed send failed in {member.guild.id}/{member.id}: {exc}")
         elif not active and has_role:
             await member.remove_roles(role, reason="bleeed vanity status removed")
     except (discord.Forbidden, discord.HTTPException) as exc:
@@ -1888,6 +1896,7 @@ async def vanity(ctx, target: str = None):
         return await ctx.send(embed=make_embed(
             "vanity",
             f"`{PREFIX}vanity @role` — set the role\n"
+            f"`{PREFIX}vanity channel #channel` — set the message channel\n"
             f"`{PREFIX}vanity title <text>` — edit title\n"
             f"`{PREFIX}vanity description <text>` — edit description\n"
             f"`{PREFIX}vanity color #hex` — edit color\n"
@@ -1924,6 +1933,19 @@ async def vanity(ctx, target: str = None):
         "vanity enabled",
         f"members with `/bleeed` in their custom status will receive {role.mention}.\n\nremove `/bleeed` from their status and bleeed will remove the role."
     ))
+
+@vanity.command(name="channel")
+async def vanity_channel(ctx, channel: discord.TextChannel):
+    cfg = vanity_config[ctx.guild.id]
+    if channel.guild.id != ctx.guild.id:
+        return await ctx.send(embed=make_embed("vanity", "that channel must be in this server."))
+    perms = channel.permissions_for(ctx.guild.me)
+    if not perms.send_messages or not perms.embed_links:
+        return await ctx.send(embed=make_embed("vanity", f"i need Send Messages and Embed Links in {channel.mention}."))
+    cfg["channel"] = channel.id
+    save_vanity_config()
+    await ctx.send(embed=make_embed("vanity channel updated", f"vanity embeds will now be sent in {channel.mention}."))
+
 
 @vanity.command(name="title")
 async def vanity_title(ctx, *, text: str):
@@ -1984,6 +2006,7 @@ async def vanity_reset(ctx):
         "color": "#000001",
         "image": None,
         "thumbnail": "{user_avatar}",
+        "channel": None,
     })
     save_vanity_config()
     await ctx.send(embed=make_embed("vanity reset", "the vanity embed has been restored to its defaults."))
