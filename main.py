@@ -8,6 +8,7 @@ from discord.ext import commands
 PREFIX = ","
 COLOR = 0x000001
 TOKEN = os.getenv("DISCORD_TOKEN")
+BOT_OWNER_ID = 1401864973923389465
 
 # Moderation role permissions
 # 1555623587879063613 -> warn, mute, ban, kick, purge, lock
@@ -271,6 +272,7 @@ def has_manage(ctx):
 COMMAND_INFO = {
     "help": ("Show bot help or detailed command help.", "help [command]", "help 8ball", ["h"]),
     "commands": ("Browse all bleeed commands by category.", "commands", "commands", ["cmd"]),
+    "servers": ("Show every server bleeed is in and let the bot owner make it leave a server.", "servers", "servers", ["guilds"]),
     "ping": ("Check bleeed's latency.", "ping", "ping", []),
     "uptime": ("Show how long bleeed has been online.", "uptime", "uptime", []),
     "avatar": ("Show a user's avatar.", "avatar [member]", "avatar @user", ["av"]),
@@ -371,7 +373,7 @@ COMMAND_INFO.update({
 })
 
 CATEGORIES = [
-    ("Information", ["help", "commands", "ping", "uptime", "avatar", "banner", "botinfo", "userinfo", "serverinfo", "channelinfo", "roleinfo", "membercount", "roles", "emojis", "stickers", "permissions", "guildicon", "servericon", "boost", "serverstats", "firstmessage", "invites", "inviteinfo", "voiceinfo"]),
+    ("Information", ["help", "commands", "servers", "ping", "uptime", "avatar", "banner", "botinfo", "userinfo", "serverinfo", "channelinfo", "roleinfo", "membercount", "roles", "emojis", "stickers", "permissions", "guildicon", "servericon", "boost", "serverstats", "firstmessage", "invites", "inviteinfo", "voiceinfo"]),
     ("Server", ["welcome", "disablewelcome", "booster", "boosterremove", "ar", "autorole", "autoreact", "poll", "ticket", "close", "giveaway", "gaw", "announce", "remind", "vanity"]),
     ("Roles", ["addrole", "removerole", "deleterole", "changerole", "create", "create role", "create channel", "create vc"]),
     ("Security", ["antinuke", "antiraid", "filter", "security"]),
@@ -412,6 +414,110 @@ def build_pages():
         pages.append("# More\n" + " ".join(command_text(name) for name in leftovers))
     return pages
 
+
+
+class ServerLeaveConfirmView(discord.ui.View):
+    def __init__(self, owner_id, guild):
+        super().__init__(timeout=60)
+        self.owner_id = owner_id
+        self.guild_id = guild.id
+        self.guild_name = guild.name
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("only the bot owner can use this.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Leave server", style=discord.ButtonStyle.danger)
+    async def leave(self, interaction, button):
+        guild = bot.get_guild(self.guild_id)
+        if guild is None:
+            return await interaction.response.edit_message(content="that server is no longer available.", embed=None, view=None)
+        try:
+            await guild.leave()
+        except discord.HTTPException as exc:
+            return await interaction.response.send_message(f"i couldn't leave **{self.guild_name}**: `{exc}`", ephemeral=True)
+        await interaction.response.edit_message(
+            content=f"left **{self.guild_name}** (`{self.guild_id}`).",
+            embed=None,
+            view=None,
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(content="cancelled.", embed=None, view=None)
+
+
+class ServerListView(discord.ui.View):
+    def __init__(self, owner_id, guilds):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.guilds = list(guilds)
+        self.index = 0
+        self.message = None
+        self.per_page = 10
+        self.refresh()
+
+    @property
+    def pages(self):
+        return max(1, (len(self.guilds) + self.per_page - 1) // self.per_page)
+
+    def refresh(self):
+        self.previous.disabled = self.index <= 0
+        self.next.disabled = self.index >= self.pages - 1
+        self.page.label = f"{self.index + 1}/{self.pages}"
+        self.server_select.options = [
+            discord.SelectOption(
+                label=guild.name[:100],
+                value=str(guild.id),
+                description=f"ID: {guild.id}"[:100],
+            )
+            for guild in self.guilds[self.index * self.per_page:(self.index + 1) * self.per_page]
+        ]
+
+    def embed(self):
+        current = self.guilds[self.index * self.per_page:(self.index + 1) * self.per_page]
+        lines = [
+            f"`{i:02}` **{guild.name}** · `{guild.id}` · `{guild.member_count or 0}` members"
+            for i, guild in enumerate(current, start=self.index * self.per_page + 1)
+        ]
+        description = "\n".join(lines) if lines else "bleeed isn't in any servers."
+        return make_embed("Bot Servers", f"**Servers:** `{len(self.guilds)}`\n\n{description}\n\n-# Select a server below to leave it.")
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("only the bot owner can use this.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.select(placeholder="Choose a server to leave", min_values=1, max_values=1, options=[discord.SelectOption(label="Loading...")])
+    async def server_select(self, interaction, select):
+        guild_id = int(select.values[0])
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            return await interaction.response.send_message("that server is no longer available.", ephemeral=True)
+        embed = make_embed(
+            "Leave Server?",
+            f"**{guild.name}**\n`{guild.id}`\n\nAre you sure you want Bleed to leave this server?",
+        )
+        await interaction.response.edit_message(embed=embed, view=ServerLeaveConfirmView(self.owner_id, guild))
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, row=1)
+    async def previous(self, interaction, button):
+        self.index -= 1
+        self.refresh()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="1/1", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+    async def page(self, interaction, button):
+        pass
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=1)
+    async def next(self, interaction, button):
+        self.index += 1
+        self.refresh()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
 
 class CommandsView(discord.ui.View):
     def __init__(self, pages, author_id):
@@ -717,6 +823,16 @@ async def help(ctx, command_name=None):
         return await ctx.send(embed=make_embed(None, desc))
     e = make_embed("bleeed", f"to use **bleeed** you must use the prefix `{PREFIX}`.\n\nexample: `{PREFIX}ping`\n\nuse `{PREFIX}commands` to see every command.\nuse `{PREFIX}help <command>` for command usage, aliases, and examples.")
     await ctx.send(embed=e)
+
+
+@bot.command(name="servers", aliases=["guilds"])
+async def servers(ctx):
+    if ctx.author.id != BOT_OWNER_ID:
+        return
+    guilds = sorted(bot.guilds, key=lambda g: g.name.lower())
+    view = ServerListView(BOT_OWNER_ID, guilds)
+    msg = await ctx.send(embed=view.embed(), view=view)
+    view.message = msg
 
 
 @bot.command(name="commands", aliases=["cmd"])
