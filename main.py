@@ -70,6 +70,16 @@ vanity_config = defaultdict(lambda: {
 AUTOROLE_CONFIG_FILE = "autorole_config.json"
 AUTOREACT_CONFIG_FILE = "autoreact_config.json"
 
+def _load_json_file(path, default=None):
+    """Load a JSON config file safely, returning default when it is missing/invalid."""
+    if default is None:
+        default = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return default
+
 def _save_json_file(path, data):
     try:
         with open(path, "w", encoding="utf-8") as f:
