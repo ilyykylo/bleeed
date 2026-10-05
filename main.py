@@ -54,6 +54,9 @@ welcome_config = defaultdict(lambda: {
 })
 WELCOME_CONFIG_FILE = "welcome_config.json"
 VANITY_CONFIG_FILE = "vanity_config.json"
+BOOSTER_CONFIG_FILE = "booster_config.json"
+BR_CONFIG_FILE = "br_config.json"
+BR_PERMISSION_ROLE = 1555248843493220463
 vanity_config = defaultdict(lambda: {
     "enabled": False,
     "role": None,
@@ -193,6 +196,29 @@ load_welcome_config()
 
 
 boost_roles = {}
+booster_config = defaultdict(lambda: {
+    "enabled": True,
+    "channel": None,
+    "title": "Thank you for boosting!",
+    "description": "{user} just boosted **{server}**! Thank you for supporting the server.",
+    "color": "#000001",
+    "image": None,
+    "thumbnail": "{user_avatar}",
+})
+br_config = defaultdict(dict)
+br_color_pairs = defaultdict(dict)
+BR_COLOR_PAIRS_FILE = "br_color_pairs.json"
+
+def load_br_color_pairs():
+    global br_color_pairs
+    data = _load_json_file(BR_COLOR_PAIRS_FILE, {})
+    br_color_pairs = defaultdict(dict)
+    for gid, users in data.items():
+        br_color_pairs[str(gid)] = {str(uid): colors for uid, colors in (users or {}).items()}
+
+def save_br_color_pairs():
+    _save_json_file(BR_COLOR_PAIRS_FILE, {str(gid): dict(users) for gid, users in br_color_pairs.items()})
+
 autoresponders = defaultdict(dict)
 autoroles = {}
 autoreacts = defaultdict(dict)
@@ -207,6 +233,62 @@ reminders = {}
 
 load_autorole_config()
 load_autoreact_config()
+
+def load_booster_config():
+    try:
+        with open(BOOSTER_CONFIG_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for gid, cfg in raw.items():
+            base = dict(booster_config[int(gid)])
+            base.update(cfg or {})
+            booster_config[int(gid)] = base
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+def save_booster_config():
+    _save_json_file(BOOSTER_CONFIG_FILE, {str(k): dict(v) for k, v in booster_config.items()})
+
+def load_br_config():
+    try:
+        with open(BR_CONFIG_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for gid, users in raw.items():
+            br_config[int(gid)] = {int(uid): int(rid) for uid, rid in (users or {}).items()}
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+def save_br_config():
+    _save_json_file(BR_CONFIG_FILE, {str(gid): {str(uid): rid for uid, rid in users.items()} for gid, users in br_config.items()})
+
+def booster_replace(text, member, role=None):
+    if text is None:
+        return None
+    replacements = {
+        "{user}": member.mention, "{mention}": member.mention,
+        "{username}": member.name, "{displayname}": member.display_name,
+        "{server}": member.guild.name, "{membercount}": str(member.guild.member_count or len(member.guild.members)),
+        "{id}": str(member.id), "{user_id}": str(member.id),
+        "{role}": role.mention if role else "", "{role_name}": role.name if role else "",
+    }
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    return text
+
+def build_booster_embed(member):
+    cfg = booster_config[member.guild.id]
+    color = parse_color(cfg.get("color", "#000001")) or COLOR
+    e = discord.Embed(title=booster_replace(cfg.get("title"), member), description=booster_replace(cfg.get("description"), member), color=color)
+    if cfg.get("image"):
+        e.set_image(url=booster_replace(cfg["image"], member))
+    if cfg.get("thumbnail"):
+        thumb = member.display_avatar.url if cfg["thumbnail"] == "{user_avatar}" else booster_replace(cfg["thumbnail"], member)
+        e.set_thumbnail(url=thumb)
+    return e
+
+load_booster_config()
+load_br_config()
+load_br_color_pairs()
+
 
 
 def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
@@ -293,6 +375,7 @@ COMMAND_INFO = {
     "disablewelcome": ("Disable welcome messages.", "disablewelcome", "disablewelcome", []),
     "booster": ("Configure the automatic booster role.", "booster [role]", "booster @Booster", []),
     "boosterremove": ("Remove the automatic booster role.", "boosterremove", "boosterremove", ["booster-off"]),
+    "br": ("Create and share a custom role.", "br <create|color|colour|icon|share> [value]", "br create VIP", []),
     "ar": ("Manage server autoresponders.", "ar <add|remove|list|clear> [data]", "ar add hello | hi there", ["autoresponder"]),
     "autorole": ("Configure a role automatically given to new members.", "autorole [role]", "autorole @Member", []),
     "autoreact": ("Configure automatic reactions to a trigger.", "autoreact <add|remove|list|clear> [data]", "autoreact add hello | 👋", []),
@@ -375,7 +458,7 @@ COMMAND_INFO.update({
 CATEGORIES = [
     ("Information", ["help", "commands", "servers", "ping", "uptime", "avatar", "banner", "botinfo", "userinfo", "serverinfo", "channelinfo", "roleinfo", "membercount", "roles", "emojis", "stickers", "permissions", "guildicon", "servericon", "boost", "serverstats", "firstmessage", "invites", "inviteinfo", "voiceinfo"]),
     ("Server", ["welcome", "disablewelcome", "booster", "boosterremove", "ar", "autorole", "autoreact", "poll", "ticket", "close", "giveaway", "gaw", "announce", "remind", "vanity"]),
-    ("Roles", ["addrole", "removerole", "deleterole", "changerole", "create", "create role", "create channel", "create vc"]),
+    ("Roles", ["addrole", "removerole", "deleterole", "changerole", "create", "create role", "create channel", "create vc", "br"]),
     ("Security", ["antinuke", "antiraid", "filter", "security"]),
     ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "unwarn", "clearwarnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "topic", "say"]),
     ("Fun", ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "wyr", "mock", "reverse", "truth", "dare", "wouldyou"]),
@@ -620,8 +703,13 @@ async def on_member_update(before, after):
             if role and role < after.guild.me.top_role:
                 try: await after.add_roles(role, reason="bleeed booster role")
                 except discord.HTTPException: pass
-        if after.guild.system_channel:
-            await after.guild.system_channel.send(embed=make_embed("boost", f"thank you {after.mention} for boosting **{after.guild.name}**! ♡"))
+        cfg = booster_config[after.guild.id]
+        channel = after.guild.get_channel(int(cfg.get("channel"))) if cfg.get("channel") else after.guild.system_channel
+        if channel:
+            try:
+                await channel.send(embed=build_booster_embed(after))
+            except discord.HTTPException as exc:
+                print(f"booster embed send failed: {exc}")
 
 
 def vanity_replace(text, member, role=None):
@@ -1280,12 +1368,42 @@ async def disablewelcome(ctx):
     await ctx.send(embed=make_embed("Welcome Disabled", "welcome messages are now disabled. Your custom embed settings were kept."))
 
 @bot.command()
-async def booster(ctx, role: discord.Role=None):
-    if role is None:
-        rid=boost_roles.get(ctx.guild.id); return await ctx.send(embed=make_embed("booster", f"booster role: {ctx.guild.get_role(rid).mention if rid and ctx.guild.get_role(rid) else 'not configured'}"))
-    if not ctx.author.guild_permissions.manage_roles: return await ctx.send(embed=make_embed("no permission", "you need Manage Roles."))
-    if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("error", "my role must be above the booster role."))
-    boost_roles[ctx.guild.id]=role.id; await ctx.send(embed=make_embed("booster role set", f"boosters will receive {role.mention}."))
+async def booster(ctx, action=None, *, value=""):
+    if not has_manage(ctx):
+        return await ctx.send(embed=make_embed("no permission", "you need Manage Server."))
+    cfg = booster_config[ctx.guild.id]
+    action = (action or "settings").lower()
+    if action in {"help", "settings"}:
+        role = ctx.guild.get_role(boost_roles.get(ctx.guild.id)) if boost_roles.get(ctx.guild.id) else None
+        channel = ctx.guild.get_channel(int(cfg.get("channel"))) if cfg.get("channel") else None
+        return await ctx.send(embed=make_embed("booster settings", f"**Role**\n{role.mention if role else 'not configured'}\n\n**Channel**\n{channel.mention if channel else 'server system channel'}\n\n**Title**\n{cfg.get('title')}\n\n**Description**\n{cfg.get('description')}\n\n**Color**\n`{cfg.get('color')}`\n\nUse `{PREFIX}booster channel #channel`, `{PREFIX}booster title <text>`, `{PREFIX}booster description <text>`, `{PREFIX}booster color #hex`, `{PREFIX}booster image <url|off>`, `{PREFIX}booster thumbnail <user|url|off>`, `{PREFIX}booster preview` or `{PREFIX}booster reset` to customize it."))
+    if action == "channel":
+        channel = ctx.message.channel_mentions[0] if ctx.message.channel_mentions else None
+        if not channel:
+            m = re.search(r"(?:<#)?(\d{15,20})>?", value); channel = ctx.guild.get_channel(int(m.group(1))) if m else None
+        if not isinstance(channel, discord.TextChannel):
+            return await ctx.send(embed=make_embed("booster", "mention a text channel."))
+        cfg["channel"] = channel.id; save_booster_config()
+        return await ctx.send(embed=make_embed("booster channel updated", f"booster embeds will now be sent in {channel.mention}."))
+    if action == "title": cfg["title"] = value
+    elif action == "description": cfg["description"] = value
+    elif action == "color":
+        if parse_color(value) is None: return await ctx.send(embed=make_embed("booster", "use a 6-digit hex color such as `#efcead`."))
+        cfg["color"] = value if value.startswith("#") else "#" + value
+    elif action == "image": cfg["image"] = None if value.lower() == "off" else value
+    elif action == "thumbnail": cfg["thumbnail"] = None if value.lower() == "off" else ("{user_avatar}" if value.lower() == "user" else value)
+    elif action == "preview": return await ctx.send(embed=build_booster_embed(ctx.author))
+    elif action == "reset":
+        cfg.update({"title":"Thank you for boosting!","description":"{user} just boosted **{server}**! Thank you for supporting the server.","color":"#000001","image":None,"thumbnail":"{user_avatar}"})
+    elif action == "role":
+        role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        if not role or role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("booster", "mention a role below my highest role."))
+        boost_roles[ctx.guild.id] = role.id
+        return await ctx.send(embed=make_embed("booster role set", f"boosters will receive {role.mention}."))
+    else:
+        return await ctx.send(embed=make_embed("booster", "unknown option. use `,booster settings` for the available options."))
+    save_booster_config()
+    await ctx.send(embed=make_embed("booster updated", f"**{action}** has been updated. use `{PREFIX}booster preview` to preview it."))
 
 @bot.command(name="boosterremove", aliases=["booster-off"])
 async def boosterremove(ctx):
@@ -1983,6 +2101,87 @@ async def changerole(ctx, role: discord.Role, *, changes: str):
         f"**Role**\n{edited.mention} · `{edited.id}`\n\n**Changed**\n`{', '.join(changed)}`\n\n**Changed By**\n{ctx.author.mention}"
     ))
 
+
+class BRShareView(discord.ui.View):
+    def __init__(self, owner_id, target_id, role_id, timeout=120):
+        super().__init__(timeout=timeout); self.owner_id=owner_id; self.target_id=target_id; self.role_id=role_id; self.done=False
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_id: return await interaction.response.send_message("this confirmation is only for the mentioned user.", ephemeral=True)
+        role=interaction.guild.get_role(self.role_id)
+        if not role or role >= interaction.guild.me.top_role: return await interaction.response.edit_message(content="that role can no longer be shared.", view=None)
+        try: await interaction.user.add_roles(role, reason="BR role share accepted")
+        except discord.HTTPException: return await interaction.response.edit_message(content="i couldn't give you that role.", view=None)
+        self.done=True; await interaction.response.edit_message(content=f"{interaction.user.mention} accepted **{role.name}**.", view=None)
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_id: return await interaction.response.send_message("this confirmation is only for the mentioned user.", ephemeral=True)
+        self.done=True; await interaction.response.edit_message(content=f"{interaction.user.mention} declined **{interaction.guild.get_role(self.role_id).name if interaction.guild.get_role(self.role_id) else 'the role'}**.", view=None)
+
+@bot.command(name="br")
+async def br(ctx, action=None, *, value=""):
+    if not any(r.id == BR_PERMISSION_ROLE for r in ctx.author.roles) and not ctx.author.guild_permissions.administrator:
+        return
+    action=(action or "help").lower()
+    if action == "create":
+        if not value.strip(): return await ctx.send(embed=make_embed("br", f"usage: `{PREFIX}br create rolename`"))
+        existing=ctx.guild.get_role(br_config[ctx.guild.id].get(ctx.author.id)) if br_config[ctx.guild.id].get(ctx.author.id) else None
+        if existing: return await ctx.send(embed=make_embed("br", f"you already have {existing.mention}. edit it with `{PREFIX}br color`, `{PREFIX}br icon`, or create a new one after deleting it."))
+        role=await ctx.guild.create_role(name=value.strip(), reason=f"BR role created by {ctx.author}")
+        br_config[ctx.guild.id][ctx.author.id]=role.id; save_br_config()
+        return await ctx.send(embed=make_embed("BR role created", f"**Role**\n{role.mention} · `{role.id}`"))
+    role_id=br_config[ctx.guild.id].get(ctx.author.id); role=ctx.guild.get_role(role_id) if role_id else None
+    if action in {"help","settings"}: return await ctx.send(embed=make_embed("br", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — change color / set a two-color pair\n`{PREFIX}br colour <#hexcode> [#hexcode]` — change color / set a two-color pair\n`{PREFIX}br icon <emoji>` — change icon\n`{PREFIX}br share @user` — ask a user to accept your role" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
+    if not role: return await ctx.send(embed=make_embed("br", f"create your role first with `{PREFIX}br create <rolename>`."))
+    if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("br", "my highest role must be above your BR role."))
+    if action in {"color","colour"}:
+        parts = value.strip().split()
+        if len(parts) not in {1, 2}:
+            return await ctx.send(embed=make_embed("br", "use `,br color #hexcode` or `,br color #hexcode #hexcode`."))
+        parsed = [parse_color(part) for part in parts]
+        if any(color is None for color in parsed):
+            return await ctx.send(embed=make_embed("br", "use valid 6-digit hex colors such as `#efcead #c49a6c`."))
+
+        def fmt_hex(value):
+            return value if value.startswith("#") else f"#{value}"
+
+        first = parsed[0]
+        if len(parsed) == 2:
+            # Discord's role API exposes one solid role color here. Keep both
+            # requested colors in the BR config and use their midpoint for the
+            # actual Discord role color, so the command accepts a two-color pair
+            # without pretending the role itself can display a gradient.
+            second = parsed[1]
+            blended = tuple((a + b) // 2 for a, b in zip(
+                ((first >> 16) & 255, (first >> 8) & 255, first & 255),
+                ((second >> 16) & 255, (second >> 8) & 255, second & 255),
+            ))
+            role_color = (blended[0] << 16) | (blended[1] << 8) | blended[2]
+            await role.edit(color=discord.Color(role_color), reason=f"BR role colors changed by {ctx.author}")
+            br_color_pairs.setdefault(str(ctx.guild.id), {})[str(ctx.author.id)] = [fmt_hex(parts[0]), fmt_hex(parts[1])]
+            save_br_color_pairs()
+            return await ctx.send(embed=make_embed("br role updated", f"**Colors**\n`{fmt_hex(parts[0])}` + `{fmt_hex(parts[1])}`\n\n**Role color**\n`#{role_color:06x}`"))
+
+        await role.edit(color=discord.Color(first), reason=f"BR role color changed by {ctx.author}")
+        br_color_pairs.setdefault(str(ctx.guild.id), {})[str(ctx.author.id)] = [fmt_hex(parts[0])]
+        save_br_color_pairs()
+        return await ctx.send(embed=make_embed("br role updated", f"**Color**\n`{fmt_hex(parts[0])}`"))
+    if action == "icon":
+        if not value.strip(): return await ctx.send(embed=make_embed("br", "use `,br icon :emoji:`."))
+        try:
+            emoji = discord.PartialEmoji.from_str(value.strip())
+            if emoji.id: return await ctx.send(embed=make_embed("br", "custom emoji icons need an uploaded emoji image URL or file."))
+            await role.edit(display_icon=value.strip(), reason=f"BR role icon changed by {ctx.author}")
+        except Exception:
+            return await ctx.send(embed=make_embed("br", "i couldn't use that emoji as a role icon."))
+        return await ctx.send(embed=make_embed("br role updated", f"**Icon**\n{value.strip()}"))
+    if action == "share":
+        target=ctx.message.mentions[0] if ctx.message.mentions else None
+        if not target: return await ctx.send(embed=make_embed("br", "mention the user you want to share the role with."))
+        if target.bot: return await ctx.send(embed=make_embed("br", "you can't share a BR role with a bot."))
+        view=BRShareView(ctx.author.id,target.id,role.id)
+        return await ctx.send(f"{target.mention}, **{ctx.author.display_name}** wants to share **{role.name}** with you. Do you want it?", view=view)
+    return await ctx.send(embed=make_embed("br", f"use `{PREFIX}br help` to see the available commands."))
 
 @bot.hybrid_group(name="vanity", invoke_without_command=True, description="Configure the /bleeed custom-status role and embed.")
 @commands.has_permissions(manage_roles=True)
