@@ -70,7 +70,7 @@ vanity_config = defaultdict(lambda: {
 AUTOROLE_CONFIG_FILE = "autorole_config.json"
 AUTOREACT_CONFIG_FILE = "autoreact_config.json"
 
-def _load_json_file(path, default=None):
+def _load_json_config(path, default=None):
     """Load a JSON config file safely, returning default when it is missing/invalid."""
     if default is None:
         default = {}
@@ -221,7 +221,7 @@ BR_COLOR_PAIRS_FILE = "br_color_pairs.json"
 
 def load_br_color_pairs():
     global br_color_pairs
-    data = _load_json_file(BR_COLOR_PAIRS_FILE, {})
+    data = _load_json_config(BR_COLOR_PAIRS_FILE, {})
     br_color_pairs = defaultdict(dict)
     for gid, users in data.items():
         br_color_pairs[str(gid)] = {str(uid): colors for uid, colors in (users or {}).items()}
