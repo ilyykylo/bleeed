@@ -56,6 +56,7 @@ WELCOME_CONFIG_FILE = "welcome_config.json"
 VANITY_CONFIG_FILE = "vanity_config.json"
 BOOSTER_CONFIG_FILE = "booster_config.json"
 BR_CONFIG_FILE = "br_config.json"
+BR_BASE_CONFIG_FILE = "br_base_config.json"
 BR_PERMISSION_ROLE = 1555248843493220463
 vanity_config = defaultdict(lambda: {
     "enabled": False,
@@ -216,6 +217,7 @@ booster_config = defaultdict(lambda: {
     "thumbnail": "{user_avatar}",
 })
 br_config = defaultdict(dict)
+br_base_config = defaultdict(lambda: None)
 br_color_pairs = defaultdict(dict)
 BR_COLOR_PAIRS_FILE = "br_color_pairs.json"
 
@@ -270,6 +272,19 @@ def load_br_config():
 def save_br_config():
     _save_json_file(BR_CONFIG_FILE, {str(gid): {str(uid): rid for uid, rid in users.items()} for gid, users in br_config.items()})
 
+def load_br_base_config():
+    global br_base_config
+    data = _load_json_config(BR_BASE_CONFIG_FILE, {})
+    br_base_config = defaultdict(lambda: None)
+    for gid, rid in (data or {}).items():
+        try:
+            br_base_config[int(gid)] = int(rid)
+        except (TypeError, ValueError):
+            continue
+
+def save_br_base_config():
+    _save_json_file(BR_BASE_CONFIG_FILE, {str(gid): rid for gid, rid in br_base_config.items() if rid})
+
 def booster_replace(text, member, role=None):
     if text is None:
         return None
@@ -297,6 +312,7 @@ def build_booster_embed(member):
 
 load_booster_config()
 load_br_config()
+load_br_base_config()
 load_br_color_pairs()
 
 
@@ -385,7 +401,7 @@ COMMAND_INFO = {
     "disablewelcome": ("Disable welcome messages.", "disablewelcome", "disablewelcome", []),
     "booster": ("Configure the automatic booster role.", "booster [role]", "booster @Booster", []),
     "boosterremove": ("Remove the automatic booster role.", "boosterremove", "boosterremove", ["booster-off"]),
-    "br": ("Create and share a custom role.", "br <create|color|colour|icon|share> [value]", "br create VIP", []),
+    "br": ("Create, customize, and share a custom role.", "br <create|name|color|colour|icon|share|base> [value]", "br create VIP", []),
     "ar": ("Manage server autoresponders.", "ar <add|remove|list|clear> [data]", "ar add hello | hi there", ["autoresponder"]),
     "autorole": ("Configure a role automatically given to new members.", "autorole [role]", "autorole @Member", []),
     "autoreact": ("Configure automatic reactions to a trigger.", "autoreact <add|remove|list|clear> [data]", "autoreact add hello | 👋", []),
@@ -2137,13 +2153,50 @@ async def br(ctx, action=None, *, value=""):
         if not value.strip(): return await ctx.send(embed=make_embed("br", f"usage: `{PREFIX}br create rolename`"))
         existing=ctx.guild.get_role(br_config[ctx.guild.id].get(ctx.author.id)) if br_config[ctx.guild.id].get(ctx.author.id) else None
         if existing: return await ctx.send(embed=make_embed("br", f"you already have {existing.mention}. edit it with `{PREFIX}br color`, `{PREFIX}br icon`, or create a new one after deleting it."))
+        base_id = br_base_config.get(ctx.guild.id)
+        base_role = ctx.guild.get_role(base_id) if base_id else None
+        me = ctx.guild.me
+        if base_role and (not me or base_role >= me.top_role):
+            return await ctx.send(embed=make_embed("br", "the BR base role must be below my highest role."))
         role=await ctx.guild.create_role(name=value.strip(), reason=f"BR role created by {ctx.author}")
+        if base_role:
+            try:
+                await role.edit(position=base_role.position + 1, reason=f"BR role placed above base role by {ctx.author}")
+            except discord.HTTPException:
+                await role.delete(reason="BR role placement failed")
+                return await ctx.send(embed=make_embed("br", "i couldn't place the BR role above the configured base role."))
         br_config[ctx.guild.id][ctx.author.id]=role.id; save_br_config()
         return await ctx.send(embed=make_embed("BR role created", f"**Role**\n{role.mention} · `{role.id}`"))
+    if action == "base":
+        if not ctx.author.guild_permissions.administrator:
+            return await ctx.send(embed=make_embed("br", "only server administrators can set the BR base role."))
+        target = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        if not target:
+            return await ctx.send(embed=make_embed("br", f"use `{PREFIX}br base @role`."))
+        me = ctx.guild.me
+        if not me or target >= me.top_role:
+            return await ctx.send(embed=make_embed("br", "the BR base role must be below my highest role."))
+        br_base_config[ctx.guild.id] = target.id
+        save_br_base_config()
+        return await ctx.send(embed=make_embed("BR base role set", f"**Base Role**\n{target.mention} · `{target.id}`\n\nNew BR roles will be created above this role."))
+
     role_id=br_config[ctx.guild.id].get(ctx.author.id); role=ctx.guild.get_role(role_id) if role_id else None
-    if action in {"help","settings"}: return await ctx.send(embed=make_embed("br", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — change color / set a two-color pair\n`{PREFIX}br colour <#hexcode> [#hexcode]` — change color / set a two-color pair\n`{PREFIX}br icon <emoji>` — change icon\n`{PREFIX}br share @user` — ask a user to accept your role" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
+    if action in {"help","settings"}: return await ctx.send(embed=make_embed("br", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br colour <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br icon <emoji>` — change icon\n`{PREFIX}br share @user` — ask a user to accept your role" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
     if not role: return await ctx.send(embed=make_embed("br", f"create your role first with `{PREFIX}br create <rolename>`."))
     if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("br", "my highest role must be above your BR role."))
+    if action in {"name", "rename"}:
+        new_name = value.strip()
+        if not new_name:
+            return await ctx.send(embed=make_embed("br", f"use `{PREFIX}br name <rolename>`."))
+        if len(new_name) > 100:
+            return await ctx.send(embed=make_embed("br", "role names can be up to 100 characters."))
+        try:
+            edited = await role.edit(name=new_name, reason=f"BR role renamed by {ctx.author}")
+        except discord.Forbidden:
+            return await ctx.send(embed=make_embed("br", "i couldn't rename that role. Check my role hierarchy."))
+        except discord.HTTPException:
+            return await ctx.send(embed=make_embed("br", "Discord couldn't rename that role."))
+        return await ctx.send(embed=make_embed("BR role renamed", f"**Role**\n{edited.mention} · `{edited.id}`\n\n**New Name**\n`{edited.name}`"))
     if action in {"color","colour"}:
         parts = value.strip().split()
         if len(parts) not in {1, 2}:
@@ -2157,22 +2210,31 @@ async def br(ctx, action=None, *, value=""):
 
         first = parsed[0]
         if len(parsed) == 2:
-            # Discord's role API exposes one solid role color here. Keep both
-            # requested colors in the BR config and use their midpoint for the
-            # actual Discord role color, so the command accepts a two-color pair
-            # without pretending the role itself can display a gradient.
+            # discord.py 2.6+ exposes Discord's native enhanced role styles.
+            # Supplying a primary + secondary colour makes this an actual
+            # Discord gradient role instead of blending the two colors into one.
             second = parsed[1]
-            blended = tuple((a + b) // 2 for a, b in zip(
-                ((first >> 16) & 255, (first >> 8) & 255, first & 255),
-                ((second >> 16) & 255, (second >> 8) & 255, second & 255),
-            ))
-            role_color = (blended[0] << 16) | (blended[1] << 8) | blended[2]
-            await role.edit(color=discord.Color(role_color), reason=f"BR role colors changed by {ctx.author}")
+            try:
+                await role.edit(
+                    color=discord.Color(first),
+                    secondary_color=discord.Color(second),
+                    reason=f"BR gradient changed by {ctx.author}",
+                )
+            except TypeError:
+                # Compatibility with builds exposing the British spelling.
+                await role.edit(
+                    colour=discord.Color(first),
+                    secondary_colour=discord.Color(second),
+                    reason=f"BR gradient changed by {ctx.author}",
+                )
             br_color_pairs.setdefault(str(ctx.guild.id), {})[str(ctx.author.id)] = [fmt_hex(parts[0]), fmt_hex(parts[1])]
             save_br_color_pairs()
-            return await ctx.send(embed=make_embed("br role updated", f"**Colors**\n`{fmt_hex(parts[0])}` + `{fmt_hex(parts[1])}`\n\n**Role color**\n`#{role_color:06x}`"))
+            return await ctx.send(embed=make_embed("BR gradient updated", f"**Gradient**\n`{fmt_hex(parts[0])}` → `{fmt_hex(parts[1])}`\n\nThe role now uses Discord's native gradient style."))
 
-        await role.edit(color=discord.Color(first), reason=f"BR role color changed by {ctx.author}")
+        try:
+            await role.edit(color=discord.Color(first), secondary_color=None, reason=f"BR role color changed by {ctx.author}")
+        except TypeError:
+            await role.edit(colour=discord.Color(first), secondary_colour=None, reason=f"BR role color changed by {ctx.author}")
         br_color_pairs.setdefault(str(ctx.guild.id), {})[str(ctx.author.id)] = [fmt_hex(parts[0])]
         save_br_color_pairs()
         return await ctx.send(embed=make_embed("br role updated", f"**Color**\n`{fmt_hex(parts[0])}`"))
