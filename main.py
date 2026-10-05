@@ -1,7 +1,5 @@
 import os, time, random, asyncio, json, re
 import aiohttp
-from PIL import Image
-import io
 from collections import defaultdict, deque
 from datetime import timedelta, datetime, timezone
 import discord
@@ -2168,22 +2166,91 @@ async def br(ctx, action=None, *, value=""):
                 await role.delete(reason="BR role placement failed")
                 return await ctx.send(embed=make_embed("Booster Role", "i couldn't place the BR role above the configured base role."))
         br_config[ctx.guild.id][ctx.author.id]=role.id; save_br_config()
-        return await ctx.send(embed=make_embed("BR role created", f"**Role**\n{role.mention} · `{role.id}`"))
+        try:
+            await ctx.author.add_roles(role, reason="BR role automatically assigned on creation")
+        except discord.Forbidden:
+            br_config[ctx.guild.id].pop(ctx.author.id, None)
+            save_br_config()
+            try:
+                await role.delete(reason="BR role assignment failed")
+            except discord.HTTPException:
+                pass
+            return await ctx.send(embed=make_embed("Booster Role", "the role was created, but i couldn't give it to you. Check my role hierarchy and Manage Roles permission."))
+        except discord.HTTPException:
+            return await ctx.send(embed=make_embed("Booster Role", "the role was created, but Discord wouldn't assign it to you. Try again."))
+        return await ctx.send(embed=make_embed("Booster Role", f"**Role**\n{role.mention} · `{role.id}`\n\n**Assigned To**\n{ctx.author.mention}"))
     if action == "base":
         if not ctx.author.guild_permissions.administrator:
             return await ctx.send(embed=make_embed("Booster Role", "only server administrators can set the BR base role."))
         target = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
-        if not target:
+        if not target or target.is_default():
             return await ctx.send(embed=make_embed("Booster Role", f"use `{PREFIX}br base @role`."))
         me = ctx.guild.me
         if not me or target >= me.top_role:
             return await ctx.send(embed=make_embed("Booster Role", "the BR base role must be below my highest role."))
+
+        # Keep every tracked BR role above the configured base role.
+        tracked = []
+        for creator_id, rid in br_config[ctx.guild.id].items():
+            r = ctx.guild.get_role(rid)
+            if r and not r.is_default() and r < me.top_role:
+                tracked.append((r, creator_id))
+        if target.position + len(tracked) >= me.top_role.position:
+            return await ctx.send(embed=make_embed("Booster Role", "there isn't enough space above that base role for all existing BR roles. Choose a lower base role."))
+
+        # Move all existing BR roles as one hierarchy update so the base role
+        # remains underneath every BR role without position-shift surprises.
+        ordered = [r for r, _ in sorted(tracked, key=lambda item: item[0].position)]
+        positions = {r: target.position + 1 + offset for offset, r in enumerate(ordered)}
+        try:
+            await ctx.guild.edit_role_positions(positions=positions, reason=f"BR base role set by {ctx.author}")
+        except (discord.Forbidden, discord.HTTPException):
+            return await ctx.send(embed=make_embed("Booster Role", "i couldn't move the existing BR roles above the base role. Check my Manage Roles permission."))
+
         br_base_config[ctx.guild.id] = target.id
         save_br_base_config()
-        return await ctx.send(embed=make_embed("BR base role set", f"**Base Role**\n{target.mention} · `{target.id}`\n\nNew BR roles will be created above this role."))
+        return await ctx.send(embed=make_embed("Booster Role", f"**Base Role**\n{target.mention} · `{target.id}`\n\nAll existing and new BR roles are kept above this role."))
+
+    if action == "list":
+        entries = []
+        for creator_id, rid in br_config[ctx.guild.id].items():
+            r = ctx.guild.get_role(rid)
+            creator = ctx.guild.get_member(int(creator_id))
+            if r:
+                creator_text = creator.mention if creator else f"<@{creator_id}>"
+                entries.append((r.position, r, creator_text))
+        entries.sort(key=lambda x: x[0], reverse=True)
+        base_id = br_base_config.get(ctx.guild.id)
+        base_role = ctx.guild.get_role(base_id) if base_id else None
+        if not entries:
+            body = "no BR roles have been created in this server."
+        else:
+            body = "\n".join(f"`{i:02}` **{r.mention}** · created by {creator}" for i, (_, r, creator) in enumerate(entries, 1))
+        if base_role:
+            body += f"\n\n**Base Role**\n{base_role.mention} · `{base_role.id}`"
+        return await ctx.send(embed=make_embed("Booster Role", body))
 
     role_id=br_config[ctx.guild.id].get(ctx.author.id); role=ctx.guild.get_role(role_id) if role_id else None
-    if action in {"help","settings"}: return await ctx.send(embed=make_embed("Booster Role", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br colour <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br icon <emoji>` — change icon\n`{PREFIX}br share @user` — ask a user to accept your role" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
+    if action == "delete":
+        if not role:
+            # Clean stale ownership data if the role was deleted manually.
+            br_config[ctx.guild.id].pop(ctx.author.id, None)
+            br_color_pairs.get(str(ctx.guild.id), {}).pop(str(ctx.author.id), None)
+            save_br_config(); save_br_color_pairs()
+            return await ctx.send(embed=make_embed("Booster Role", f"you don't have a BR role. Create one with `{PREFIX}br create <rolename>`."))
+        if role >= ctx.guild.me.top_role:
+            return await ctx.send(embed=make_embed("Booster Role", "my highest role must be above your BR role."))
+        try:
+            await role.delete(reason=f"BR role deleted by {ctx.author}")
+        except discord.Forbidden:
+            return await ctx.send(embed=make_embed("Booster Role", "i couldn't delete your BR role. Check my Manage Roles permission."))
+        except discord.HTTPException:
+            return await ctx.send(embed=make_embed("Booster Role", "Discord couldn't delete your BR role. Try again."))
+        br_config[ctx.guild.id].pop(ctx.author.id, None)
+        br_color_pairs.get(str(ctx.guild.id), {}).pop(str(ctx.author.id), None)
+        save_br_config(); save_br_color_pairs()
+        return await ctx.send(embed=make_embed("Booster Role", "your BR role has been deleted."))
+    if action in {"help","settings"}: return await ctx.send(embed=make_embed("Booster Role", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br colour <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br icon <emoji>` — change icon\n`{PREFIX}br delete` — delete your BR role\n`{PREFIX}br list` — list BR roles and their creators\n`{PREFIX}br share @user` — ask a user to accept your role" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
     if not role: return await ctx.send(embed=make_embed("Booster Role", f"create your role first with `{PREFIX}br create <rolename>`."))
     if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("Booster Role", "my highest role must be above your BR role."))
     if action in {"name", "rename"}:
@@ -2241,52 +2308,14 @@ async def br(ctx, action=None, *, value=""):
         save_br_color_pairs()
         return await ctx.send(embed=make_embed("br role updated", f"**Color**\n`{fmt_hex(parts[0])}`"))
     if action == "icon":
-        if not value.strip():
-            return await ctx.send(embed=make_embed("Booster Role", "use `,br icon :emoji:` or a direct image URL."))
+        if not value.strip(): return await ctx.send(embed=make_embed("Booster Role", "use `,br icon :emoji:`."))
         try:
-            raw = value.strip()
-            emoji = discord.PartialEmoji.from_str(raw)
-            icon_bytes = None
-
-            # Custom Discord emojis are downloaded and converted to PNG.
-            # Animated emojis (.gif) therefore become a still first frame.
-            if emoji.id:
-                emoji_url = str(emoji.url)
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(emoji_url, timeout=10) as resp:
-                        if resp.status != 200:
-                            raise RuntimeError("emoji download failed")
-                        icon_bytes = await resp.read()
-            elif re.match(r"^https?://", raw, re.I):
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(raw, timeout=10) as resp:
-                        if resp.status != 200:
-                            raise RuntimeError("image download failed")
-                        icon_bytes = await resp.read()
-            else:
-                return await ctx.send(embed=make_embed("Booster Role", "use a custom emoji like `<a:emoji:123>` or a direct image URL."))
-
-            # Always make the role icon static, including animated GIF emojis.
-            try:
-                with Image.open(io.BytesIO(icon_bytes)) as image:
-                    image.seek(0)
-                    frame = image.convert("RGBA")
-                    output = io.BytesIO()
-                    frame.save(output, format="PNG", optimize=True)
-                    icon_bytes = output.getvalue()
-            except Exception:
-                # If Discord already returned a supported static image, keep it.
-                pass
-
-            if len(icon_bytes) > 256 * 1024:
-                return await ctx.send(embed=make_embed("Booster Role", "that icon is too large. Try a smaller emoji/image."))
-
-            await role.edit(display_icon=icon_bytes, reason=f"BR role icon changed by {ctx.author}")
-        except (discord.Forbidden, discord.HTTPException, RuntimeError, ValueError, OSError):
-            return await ctx.send(embed=make_embed("Booster Role", "i couldn't use that emoji/image as a role icon."))
+            emoji = discord.PartialEmoji.from_str(value.strip())
+            if emoji.id: return await ctx.send(embed=make_embed("Booster Role", "custom emoji icons need an uploaded emoji image URL or file."))
+            await role.edit(display_icon=value.strip(), reason=f"BR role icon changed by {ctx.author}")
         except Exception:
-            return await ctx.send(embed=make_embed("Booster Role", "i couldn't use that emoji/image as a role icon."))
-        return await ctx.send(embed=make_embed("Booster Role", f"**Icon**\n{value.strip()}"))
+            return await ctx.send(embed=make_embed("Booster Role", "i couldn't use that emoji as a role icon."))
+        return await ctx.send(embed=make_embed("br role updated", f"**Icon**\n{value.strip()}"))
     if action == "share":
         target=ctx.message.mentions[0] if ctx.message.mentions else None
         if not target: return await ctx.send(embed=make_embed("Booster Role", "mention the user you want to share the role with."))
