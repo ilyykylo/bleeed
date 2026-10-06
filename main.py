@@ -1,4 +1,4 @@
-import os, time, random, asyncio, json, re
+import os, time, random, asyncio, json, re, io
 import aiohttp
 from collections import defaultdict, deque
 from datetime import timedelta, datetime, timezone
@@ -58,6 +58,7 @@ BOOSTER_CONFIG_FILE = "booster_config.json"
 BR_CONFIG_FILE = "br_config.json"
 BR_BASE_CONFIG_FILE = "br_base_config.json"
 BR_PERMISSION_ROLE = 1555248843493220463
+BR_OVERRIDE_FILE = "br_overrides.json"
 vanity_config = defaultdict(lambda: {
     "enabled": False,
     "role": None,
@@ -219,6 +220,7 @@ booster_config = defaultdict(lambda: {
 br_config = defaultdict(dict)
 br_base_config = defaultdict(lambda: None)
 br_color_pairs = defaultdict(dict)
+br_overrides = defaultdict(set)
 BR_COLOR_PAIRS_FILE = "br_color_pairs.json"
 
 def load_br_color_pairs():
@@ -272,6 +274,53 @@ def load_br_config():
 def save_br_config():
     _save_json_file(BR_CONFIG_FILE, {str(gid): {str(uid): rid for uid, rid in users.items()} for gid, users in br_config.items()})
 
+
+def load_br_overrides():
+    global br_overrides
+    data = _load_json_config(BR_OVERRIDE_FILE, {})
+    br_overrides = defaultdict(set)
+    for gid, users in (data or {}).items():
+        try:
+            br_overrides[int(gid)] = {int(uid) for uid in (users or [])}
+        except (TypeError, ValueError):
+            continue
+
+def save_br_overrides():
+    _save_json_file(BR_OVERRIDE_FILE, {str(gid): sorted(users) for gid, users in br_overrides.items() if users})
+
+def has_br_access(member):
+    return (member.guild_permissions.administrator
+            or any(r.id == BR_PERMISSION_ROLE for r in member.roles)
+            or member.id in br_overrides.get(member.guild.id, set()))
+
+def _is_custom_emoji(value):
+    try:
+        emoji = discord.PartialEmoji.from_str(value.strip())
+        return emoji if emoji.id else None
+    except Exception:
+        return None
+
+async def br_icon_bytes_from_custom_emoji(emoji):
+    """Download a Discord custom emoji and turn animated GIFs into a static PNG."""
+    url = str(emoji.url)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=15) as resp:
+            if resp.status != 200:
+                return None
+            raw = await resp.read()
+    if len(raw) > 10 * 1024 * 1024:
+        return None
+    try:
+        from PIL import Image
+        image = Image.open(io.BytesIO(raw))
+        image.seek(0)
+        image = image.convert("RGBA")
+        out = io.BytesIO()
+        image.save(out, format="PNG", optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
 def load_br_base_config():
     global br_base_config
     data = _load_json_config(BR_BASE_CONFIG_FILE, {})
@@ -314,6 +363,7 @@ load_booster_config()
 load_br_config()
 load_br_base_config()
 load_br_color_pairs()
+load_br_overrides()
 
 
 
@@ -401,7 +451,7 @@ COMMAND_INFO = {
     "disablewelcome": ("Disable welcome messages.", "disablewelcome", "disablewelcome", []),
     "booster": ("Configure the automatic booster role.", "booster [role]", "booster @Booster", []),
     "boosterremove": ("Remove the automatic booster role.", "boosterremove", "boosterremove", ["booster-off"]),
-    "br": ("Create, customize, and share a custom role.", "br <create|name|color|colour|icon|share|base> [value]", "br create VIP", []),
+    "br": ("Create, customize, share, and manage Booster Roles.", "br <create|name|color|colour|icon|share|delete|list|base|override> [value]", "br create VIP", []),
     "ar": ("Manage server autoresponders.", "ar <add|remove|list|clear> [data]", "ar add hello | hi there", ["autoresponder"]),
     "autorole": ("Configure a role automatically given to new members.", "autorole [role]", "autorole @Member", []),
     "autoreact": ("Configure automatic reactions to a trigger.", "autoreact <add|remove|list|clear> [data]", "autoreact add hello | 👋", []),
@@ -2146,9 +2196,39 @@ class BRShareView(discord.ui.View):
 
 @bot.command(name="br")
 async def br(ctx, action=None, *, value=""):
-    if not any(r.id == BR_PERMISSION_ROLE for r in ctx.author.roles) and not ctx.author.guild_permissions.administrator:
-        return
     action=(action or "help").lower()
+
+    # Override management is deliberately admin-only.
+    if action == "override":
+        if not ctx.author.guild_permissions.administrator:
+            return await ctx.send(embed=make_embed("Booster Role", "only server administrators can manage BR overrides."))
+        target = ctx.message.mentions[0] if ctx.message.mentions else None
+        lowered = value.lower().strip()
+        remove = lowered.startswith("remove ") or lowered.startswith("off ") or lowered.startswith("revoke ")
+        if not target and remove:
+            parts = value.split()
+            if len(parts) > 1:
+                try:
+                    target = ctx.guild.get_member(int(re.sub(r"\D", "", parts[1])))
+                except (ValueError, TypeError):
+                    target = None
+        if not target:
+            return await ctx.send(embed=make_embed("Booster Role", f"use `{PREFIX}br override @user` to allow a user to create a BR without boosting, or `{PREFIX}br override remove @user` to revoke it."))
+        if target.bot:
+            return await ctx.send(embed=make_embed("Booster Role", "you can't give a BR override to a bot."))
+        users = br_overrides[ctx.guild.id]
+        if remove:
+            if target.id not in users:
+                return await ctx.send(embed=make_embed("Booster Role", f"{target.mention} doesn't have a BR override."))
+            users.discard(target.id)
+            save_br_overrides()
+            return await ctx.send(embed=make_embed("Booster Role", f"BR override removed from {target.mention}."))
+        users.add(target.id)
+        save_br_overrides()
+        return await ctx.send(embed=make_embed("Booster Role", f"{target.mention} can now create a BR without boosting."))
+
+    if not has_br_access(ctx.author):
+        return
     if action == "create":
         if not value.strip(): return await ctx.send(embed=make_embed("Booster Role", f"usage: `{PREFIX}br create rolename`"))
         existing=ctx.guild.get_role(br_config[ctx.guild.id].get(ctx.author.id)) if br_config[ctx.guild.id].get(ctx.author.id) else None
@@ -2250,7 +2330,7 @@ async def br(ctx, action=None, *, value=""):
         br_color_pairs.get(str(ctx.guild.id), {}).pop(str(ctx.author.id), None)
         save_br_config(); save_br_color_pairs()
         return await ctx.send(embed=make_embed("Booster Role", "your BR role has been deleted."))
-    if action in {"help","settings"}: return await ctx.send(embed=make_embed("Booster Role", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br colour <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br icon <emoji>` — change icon\n`{PREFIX}br delete` — delete your BR role\n`{PREFIX}br list` — list BR roles and their creators\n`{PREFIX}br share @user` — ask a user to accept your role" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
+    if action in {"help","settings"}: return await ctx.send(embed=make_embed("Booster Role", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br colour <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br icon <emoji>` — use any Unicode/custom emoji (animated custom emojis become still)\n`{PREFIX}br delete` — delete your BR role\n`{PREFIX}br list` — list BR roles and their creators\n`{PREFIX}br share @user` — ask a user to accept your role\n`{PREFIX}br override @user` — admin: let a user create without boosting\n`{PREFIX}br override remove @user` — admin: revoke an override" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
     if not role: return await ctx.send(embed=make_embed("Booster Role", f"create your role first with `{PREFIX}br create <rolename>`."))
     if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("Booster Role", "my highest role must be above your BR role."))
     if action in {"name", "rename"}:
@@ -2308,14 +2388,27 @@ async def br(ctx, action=None, *, value=""):
         save_br_color_pairs()
         return await ctx.send(embed=make_embed("br role updated", f"**Color**\n`{fmt_hex(parts[0])}`"))
     if action == "icon":
-        if not value.strip(): return await ctx.send(embed=make_embed("Booster Role", "use `,br icon :emoji:`."))
+        icon_value = value.strip()
+        if not icon_value:
+            return await ctx.send(embed=make_embed("Booster Role", "use `,br icon <emoji>` — Unicode emojis, custom emojis, and animated custom emojis are supported."))
+
+        # Custom Discord emoji: download it and send the image bytes to Discord.
+        # Animated custom emojis are converted to the first frame so the role icon
+        # is always a still image.
+        custom_emoji = _is_custom_emoji(icon_value)
         try:
-            emoji = discord.PartialEmoji.from_str(value.strip())
-            if emoji.id: return await ctx.send(embed=make_embed("Booster Role", "custom emoji icons need an uploaded emoji image URL or file."))
-            await role.edit(display_icon=value.strip(), reason=f"BR role icon changed by {ctx.author}")
-        except Exception:
-            return await ctx.send(embed=make_embed("Booster Role", "i couldn't use that emoji as a role icon."))
-        return await ctx.send(embed=make_embed("br role updated", f"**Icon**\n{value.strip()}"))
+            if custom_emoji:
+                icon_bytes = await br_icon_bytes_from_custom_emoji(custom_emoji)
+                if not icon_bytes:
+                    return await ctx.send(embed=make_embed("Booster Role", "i couldn't download or convert that custom emoji."))
+                await role.edit(display_icon=icon_bytes, reason=f"BR role icon changed by {ctx.author}")
+            else:
+                # Pass the Unicode emoji directly. This covers normal Apple/Android
+                # emoji, skin tones, flags, ZWJ emoji, and other Unicode sequences.
+                await role.edit(display_icon=icon_value, reason=f"BR role icon changed by {ctx.author}")
+        except (discord.Forbidden, discord.HTTPException, ValueError, TypeError):
+            return await ctx.send(embed=make_embed("Booster Role", "Discord couldn't use that emoji as a role icon. Make sure the role is below my highest role and the server supports role icons."))
+        return await ctx.send(embed=make_embed("Booster Role", f"**Icon**\n{icon_value}"))
     if action == "share":
         target=ctx.message.mentions[0] if ctx.message.mentions else None
         if not target: return await ctx.send(embed=make_embed("Booster Role", "mention the user you want to share the role with."))
