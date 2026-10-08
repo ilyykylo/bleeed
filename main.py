@@ -3548,7 +3548,10 @@ async def logconfig(ctx, action="status", channel: discord.TextChannel = None):
     if not v53_can_manage(ctx): return
     cfg=v53cfg(ctx.guild.id); logs=cfg["logs"]; action=action.lower()
     if action in {"status", "view"}:
-        return await ctx.send(embed=make_embed("log configuration", f"join: {f'<#{logs.get("join")}>' if logs.get('join') else '`off`'}\nleave: {f'<#{logs.get("leave")}>' if logs.get('leave') else '`off`'}\naudit: {f'<#{logs.get("audit")}>' if logs.get('audit') else '`off`'}"))
+        join_log = f"<#{logs.get('join')}>" if logs.get("join") else "`off`"
+    leave_log = f"<#{logs.get('leave')}>" if logs.get("leave") else "`off`"
+    audit_log = f"<#{logs.get('audit')}>" if logs.get("audit") else "`off`"
+    return await ctx.send(embed=make_embed("log configuration", f"join: {join_log}\nleave: {leave_log}\naudit: {audit_log}"))
     if action not in {"join", "leave", "audit"} or not channel:
         return await ctx.send(embed=make_embed("log configuration", f"usage: `{PREFIX}logconfig <join|leave|audit> #channel`"))
     logs[action]=channel.id; v53_save(ctx.guild.id)
