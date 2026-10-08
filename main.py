@@ -40,8 +40,9 @@ intents.presences = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 start_time = time.time()
+v53_message_times = defaultdict(lambda: deque(maxlen=20))
 warning_data = defaultdict(lambda: defaultdict(list))
-modlogs = defaultdict(lambda: defaultdict(list))
+modlog_data = defaultdict(lambda: defaultdict(list))
 quarantine_data = defaultdict(dict)
 afk_data = {}
 welcome_channels = {}
@@ -94,17 +95,17 @@ def _save_json_file(path, data):
         print(f"config save failed for {path}: {exc}")
 
 def load_modlogs():
-    global modlogs
+    global modlog_data
     raw = _load_json_config(MODLOG_FILE, {})
-    modlogs = defaultdict(lambda: defaultdict(list))
+    modlog_data = defaultdict(lambda: defaultdict(list))
     for gid, users in (raw or {}).items():
         try:
-            modlogs[int(gid)] = defaultdict(list, {int(uid): list(entries or []) for uid, entries in (users or {}).items()})
+            modlog_data[int(gid)] = defaultdict(list, {int(uid): list(entries or []) for uid, entries in (users or {}).items()})
         except (TypeError, ValueError):
             continue
 
 def save_modlogs():
-    _save_json_file(MODLOG_FILE, {str(gid): {str(uid): list(entries) for uid, entries in users.items()} for gid, users in modlogs.items() if users})
+    _save_json_file(MODLOG_FILE, {str(gid): {str(uid): list(entries) for uid, entries in users.items()} for gid, users in modlog_data.items() if users})
 
 def load_quarantine():
     global quarantine_data
@@ -128,8 +129,8 @@ def record_modlog(guild, member_or_id, action, moderator, reason="No reason prov
         "timestamp": int(time.time()),
     }
     entry.update(extra)
-    modlogs[guild.id][uid].append(entry)
-    modlogs[guild.id][uid] = modlogs[guild.id][uid][-100:]
+    modlog_data[guild.id][uid].append(entry)
+    modlog_data[guild.id][uid] = modlog_data[guild.id][uid][-100:]
     save_modlogs()
 
 def load_autorole_config():
@@ -439,6 +440,19 @@ def result_embed(title, label, value, *, extra=None):
             lines.append(f"**{name}**\n{content}")
     return discord.Embed(description="\n\n".join(lines), color=COLOR)
 
+
+
+def action_embed(message, *, added=False, removed=False):
+    """Compact Discord-style action response used for successful add/remove actions."""
+    if added:
+        icon = "<:add:1557785192712642634>"
+    elif removed:
+        icon = "<:remove:1557785190183600258>"
+    else:
+        icon = ""
+    return discord.Embed(description=f"{icon} {message}".strip(), color=0x5865F2)
+
+
 def role_ok(member, role_ids):
     # Server Administrators always pass BLEEED's role-based moderation checks.
     return member.guild_permissions.administrator or any(r.id in role_ids for r in member.roles)
@@ -581,6 +595,31 @@ COMMAND_INFO.update({
     "randomnumber": ("Pick a random integer in a range.", "randomnumber [minimum] [maximum]", "randomnumber 1 100", ["rand"]),
 })
 
+COMMAND_INFO.update({
+    "settings": ("View and manage the server's main bleeed configuration.", "settings [view|set|reset] ...", "settings", ["cfg"]),
+    "joinlog": ("Log new members into a dedicated channel.", "joinlog [channel]", "joinlog #logs", ["joinlogs"]),
+    "leavelog": ("Log members leaving the server.", "leavelog [channel]", "leavelog #logs", ["leavelogs"]),
+    "auditlog": ("Set the channel for automated event and security logs.", "auditlog [channel]", "auditlog #logs", ["auditlogs"]),
+    "logconfig": ("View or configure join, leave, and audit logging.", "logconfig <join|leave|audit> #channel", "logconfig audit #logs", ["modconfig"]),
+    "goodbye": ("Configure a customizable member-leave message.", "goodbye <on|off|channel|message|status>", "goodbye message goodbye {username}", ["leave"]),
+    "gallery": ("Make channels accept image/attachment posts only.", "gallery <add|remove|list> [channel]", "gallery add #media", []),
+    "protection": ("Toggle lightweight link, caps, spam, and mention protection.", "protection <on|off> <links|caps|spam|mentions>", "protection on links", ["automod"]),
+    "alias": ("Create guild-local shortcuts for existing commands.", "alias <add|remove|list|reset> ...", "alias add si serverinfo", ["aliasadd"]),
+    "commandtoggle": ("Disable or enable a command in the current channel.", "commandtoggle <on|off|list> <command>", "commandtoggle off giveaway", ["disabled"]),
+    "count": ("Count members or members holding a role.", "count [role]", "count @Members", []),
+    "rolelist": ("Show a compact role/member-count overview.", "rolelist", "rolelist", ["toproles"]),
+    "channelstatsall": ("Show counts of the server's channel types.", "channelstatsall", "channelstatsall", ["channels"]),
+    "memberstats": ("Show human, bot, and presence statistics.", "memberstats", "memberstats", ["memberstats"]),
+    "usersearch": ("Look up a user by Discord ID.", "usersearch <user_id>", "usersearch 123456789", ["userinfoid"]),
+    "settopic": ("Set or view the current channel topic.", "settopic [topic]", "settopic weekly discussion", ["topicset"]),
+    "clone": ("Clone the current or selected channel.", "clone [channel] [name]", "clone #general general-copy", []),
+    "massrole": ("Add or remove a role from non-bot members.", "massrole <add|remove> @role", "massrole add @Member", ["rmrole"]),
+    "timer": ("Set a reminder and receive it by DM.", "timer <duration> [message]", "timer 30m check the event", ["remindme"]),
+    "embed": ("Send a clean bleeed-styled embed from text.", "embed <text>", "embed server rules are here", ["sayembed"]),
+    "cleanbots": ("Remove recent bot messages from the current channel.", "cleanbots [amount]", "cleanbots 50", ["purgebots"]),
+    "invitecheck": ("List server invites and their usage.", "invitecheck", "invitecheck", ["invites"]),
+})
+
 CATEGORIES = [
     ("Information", ["help", "commands", "servers", "ping", "uptime", "avatar", "banner", "botinfo", "userinfo", "serverinfo", "channelinfo", "roleinfo", "membercount", "roles", "emojis", "stickers", "permissions", "guildicon", "servericon", "boost", "serverstats", "firstmessage", "invites", "inviteinfo", "voiceinfo", "id", "joined", "created"]),
     ("Server", ["welcome", "disablewelcome", "booster", "boosterremove", "ar", "autorole", "autoreact", "poll", "ticket", "close", "giveaway", "gaw", "announce", "remind", "vanity"]),
@@ -591,6 +630,12 @@ CATEGORIES = [
     ("Social", ["hug", "pat", "love", "simp", "gayrate", "howlucky", "ship", "shipname", "compliment"]),
     ("Utility", ["afk", "randomnumber"]),
 ]
+
+# V53 command-browser categories.
+CATEGORIES.extend([
+    ("Management", ["settings", "joinlog", "leavelog", "auditlog", "logconfig", "goodbye", "gallery", "protection", "alias", "commandtoggle", "count", "rolelist", "channelstatsall", "memberstats", "usersearch", "settopic", "clone", "massrole"]),
+    ("Utility Plus", ["timer", "embed", "cleanbots", "invitecheck"]),
+])
 
 
 def command_text(name):
@@ -830,6 +875,14 @@ async def on_member_join(member):
         if role and role < member.guild.me.top_role:
             try: await member.add_roles(role, reason="bleeed autorole")
             except discord.HTTPException: pass
+    vcfg = v53cfg(member.guild.id) if "v53cfg" in globals() else {}
+    join_cid = vcfg.get("logs", {}).get("join") if vcfg else None
+    join_channel = member.guild.get_channel(int(join_cid)) if join_cid else None
+    if join_channel:
+        try:
+            await join_channel.send(embed=make_embed("member joined", f"{member.mention} · `{member.id}`\n\naccount created <t:{int(member.created_at.timestamp())}:R>"))
+        except discord.HTTPException:
+            pass
     cfg = get_welcome_config(member.guild.id)
     channel_id = cfg.get("channel") or welcome_channels.get(member.guild.id)
     if cfg.get("enabled") and channel_id:
@@ -1022,10 +1075,57 @@ async def on_message(message):
     if message.author.bot: return
     content = message.content.lower().strip()
     if message.guild:
+        # Legacy word filter.
         if filter_enabled[message.guild.id] and any(w in content.split() for w in filter_words[message.guild.id]):
             try: await message.delete()
             except discord.HTTPException: pass
             return
+
+        # Persistent v53 protection switches.
+        cfg = v53cfg(message.guild.id) if "v53cfg" in globals() else {}
+        auto = cfg.get("automod", {}) if cfg else {}
+        exempt = {int(x) for x in cfg.get("automod_exempt_roles", [])} if cfg else set()
+        exempted = any(r.id in exempt for r in message.author.roles) or message.author.guild_permissions.administrator
+        if not exempted:
+            reason = None
+            if auto.get("links") and re.search(r"https?://|discord\.gg/|discord\.com/invite/", content, re.I):
+                reason = "link filter"
+            elif auto.get("caps") and len(re.sub(r"[^A-Za-z]", "", message.content)) >= 12:
+                letters = re.sub(r"[^A-Za-z]", "", message.content)
+                if letters and sum(c.isupper() for c in letters) / len(letters) >= 0.75:
+                    reason = "caps filter"
+            elif auto.get("mentions") and len(message.mentions) + len(message.role_mentions) >= 6:
+                reason = "mention spam"
+            if auto.get("spam"):
+                q = v53_message_times[(message.guild.id, message.author.id)]
+                now = time.time(); q.append(now)
+                while q and now - q[0] > 7: q.popleft()
+                if len(q) >= 6: reason = "spam filter"
+            if reason:
+                try: await message.delete()
+                except discord.HTTPException: pass
+                cid = cfg.get("logs", {}).get("audit")
+                ch = message.guild.get_channel(int(cid)) if cid else None
+                if ch:
+                    try: await ch.send(embed=make_embed("automod action", f"deleted {message.author.mention}'s message in {message.channel.mention}\n\n**Reason**\n`{reason}`"))
+                    except discord.HTTPException: pass
+                return
+
+        # Gallery mode: only messages with attachments/images are allowed.
+        if message.channel.id in {int(x) for x in cfg.get("gallery_channels", [])} and not message.attachments:
+            try: await message.delete()
+            except discord.HTTPException: pass
+            return
+
+        # Guild-local command aliases.
+        if content.startswith(PREFIX):
+            parts = message.content[len(PREFIX):].strip().split(maxsplit=1)
+            if parts:
+                custom = cfg.get("aliases", {}).get(parts[0].lower())
+                if custom:
+                    rest = f" {parts[1]}" if len(parts) > 1 else ""
+                    message.content = PREFIX + custom + rest
+
         if content in autoreacts[message.guild.id]:
             for reaction in autoreacts[message.guild.id][content][:3]:
                 try:
@@ -1595,7 +1695,7 @@ async def autoreact(ctx, action="list", *, data=""):
 async def modlogs(ctx, member: discord.Member):
     if not role_ok(ctx.author, WARN_ROLES):
         return await ctx.send(embed=make_embed("no permission", "you need a configured moderation role or Administrator."))
-    entries = list(modlogs[ctx.guild.id][member.id])[-20:]
+    entries = list(modlog_data[ctx.guild.id][member.id])[-20:]
     if not entries:
         return await ctx.send(embed=make_embed("Modlogs", f"No moderation logs found for {member.mention}."))
     lines = []
@@ -2255,7 +2355,7 @@ async def addrole(ctx, member: discord.Member, role: discord.Role):
     if role >= ctx.guild.me.top_role or role >= ctx.author.top_role:
         return await ctx.send(embed=make_embed("error", "that role is too high for you or the bot."))
     await member.add_roles(role, reason=f"role added by {ctx.author}")
-    await ctx.send(embed=make_embed("role added", f"gave {role.mention} to {member.mention}."))
+    await ctx.send(embed=action_embed(f"Added {role.mention} to {member.mention}", added=True))
 
 
 @bot.hybrid_command(name="removerole")
@@ -2265,7 +2365,7 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
     if role >= ctx.guild.me.top_role or role >= ctx.author.top_role:
         return await ctx.send(embed=make_embed("error", "that role is too high for you or the bot."))
     await member.remove_roles(role, reason=f"role removed by {ctx.author}")
-    await ctx.send(embed=make_embed("role removed", f"removed {role.mention} from {member.mention}."))
+    await ctx.send(embed=action_embed(f"Removed {role.mention} from {member.mention}", removed=True))
 
 
 @bot.hybrid_command(name="deleterole", aliases=["delrole", "roledelete"], description="Delete a server role.")
@@ -2927,7 +3027,7 @@ async def unroleall(ctx, role: discord.Role):
                 removed += 1
             except (discord.Forbidden, discord.HTTPException):
                 pass
-    await ctx.send(embed=make_embed("unrole all", f"removed {role.mention} from `{removed}` members."))
+    await ctx.send(embed=action_embed(f"Removed {role.mention} from `{removed}` members", removed=True))
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
@@ -2993,7 +3093,7 @@ async def modnote(ctx, action="list", member: discord.Member = None, *, note: st
 async def cases(ctx, member: discord.Member):
     if not (ctx.author.guild_permissions.administrator or any(r.id in WARN_ROLES for r in ctx.author.roles)):
         return
-    entries = modlogs[ctx.guild.id].get(member.id, [])[-25:]
+    entries = modlog_data[ctx.guild.id].get(member.id, [])[-25:]
     if not entries:
         return await ctx.send(embed=make_embed("mod cases", f"no cases found for {member.mention}."))
     lines=[]
@@ -3095,6 +3195,403 @@ async def timestamp(ctx, unix: int = None):
     unix = unix or int(time.time())
     await ctx.send(embed=make_embed("timestamp", f"`{unix}`\n\n<t:{unix}:F>\n<t:{unix}:R>\n<t:{unix}:D>"))
 
+
+# =========================
+# V53 COMMUNITY / MANAGEMENT PACK
+# =========================
+# Persistent configuration lives inside the existing ultimate_config.json so this
+# expansion does not create a pile of extra files.
+
+def v53cfg(gid):
+    cfg = guild_cfg(gid)
+    cfg.setdefault("logs", {})
+    cfg.setdefault("aliases", {})
+    cfg.setdefault("disabled_commands", {})
+    cfg.setdefault("gallery_channels", [])
+    cfg.setdefault("command_cooldowns", {})
+    cfg.setdefault("joinlog", None)
+    cfg.setdefault("leavelog", None)
+    cfg.setdefault("auditlog", None)
+    cfg.setdefault("automod", {"links": False, "caps": False, "spam": False, "mentions": False})
+    cfg.setdefault("automod_exempt_roles", [])
+    return cfg
+
+
+def v53_save(gid):
+    v53cfg(gid)
+    save_ultimate_config()
+
+
+def is_staffish(ctx):
+    return bool(ctx.guild and (ctx.author.guild_permissions.administrator or ctx.author.guild_permissions.manage_guild or role_ok(ctx.author, WARN_ROLES)))
+
+
+def v53_can_manage(ctx):
+    return bool(ctx.guild and (ctx.author.guild_permissions.administrator or ctx.author.guild_permissions.manage_guild))
+
+
+def v53_channel(value, ctx):
+    if value is None:
+        return None
+    if ctx.message.channel_mentions:
+        return ctx.message.channel_mentions[0]
+    value = str(value).strip().replace("<#", "").replace(">", "")
+    try:
+        return ctx.guild.get_channel(int(value))
+    except ValueError:
+        return None
+
+
+@bot.command(aliases=["cfg"])
+async def settings(ctx, action="view", key=None, *, value=None):
+    if not v53_can_manage(ctx):
+        return
+    cfg = v53cfg(ctx.guild.id)
+    action = action.lower()
+    if action in {"view", "show"}:
+        logs = cfg.get("logs", {})
+        automod = cfg.get("automod", {})
+        body = (
+            f"**Prefix**\n`{PREFIX}`\n\n"
+            f"**Join log**\n{f'<#{logs.get("join")}>' if logs.get('join') else '`off`'}\n\n"
+            f"**Leave log**\n{f'<#{logs.get("leave")}>' if logs.get('leave') else '`off`'}\n\n"
+            f"**Audit log**\n{f'<#{logs.get("audit")}>' if logs.get('audit') else '`off`'}\n\n"
+            f"**Automod**\nlinks=`{automod.get('links', False)}` · caps=`{automod.get('caps', False)}` · spam=`{automod.get('spam', False)}` · mentions=`{automod.get('mentions', False)}`\n\n"
+            f"**Gallery channels**\n`{len(cfg.get('gallery_channels', []))}`"
+        )
+        return await ctx.send(embed=make_embed("server settings", body))
+    if action in {"reset"}:
+        if not ctx.author.guild_permissions.administrator:
+            return
+        ultimate_config[str(ctx.guild.id)] = {}
+        save_ultimate_config()
+        return await ctx.send(embed=make_embed("settings reset", "server-specific v53 settings were reset."))
+    if action in {"set", "config"} and key:
+        allowed = {"joinlog": "join", "leavelog": "leave", "auditlog": "audit"}
+        if key.lower() in allowed:
+            channel = v53_channel(value, ctx)
+            if not channel or not isinstance(channel, discord.TextChannel):
+                return await ctx.send(embed=make_embed("settings", f"usage: `{PREFIX}settings set {key} #channel`"))
+            cfg["logs"][allowed[key.lower()]] = channel.id
+            v53_save(ctx.guild.id)
+            return await ctx.send(embed=make_embed("settings updated", f"{key.lower()} → {channel.mention}"))
+    return await ctx.send(embed=make_embed("settings", f"use `{PREFIX}settings` to view configuration."))
+
+
+@bot.command(aliases=["joinlogs"])
+async def joinlog(ctx, channel: discord.TextChannel = None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id)
+    if channel is None:
+        cid = cfg["logs"].get("join")
+        return await ctx.send(embed=make_embed("join log", f"channel: {f'<#{cid}>' if cid else '`off`'}"))
+    cfg["logs"]["join"] = channel.id; v53_save(ctx.guild.id)
+    await ctx.send(embed=make_embed("join log", f"join events will be logged in {channel.mention}."))
+
+
+@bot.command(aliases=["leavelogs"])
+async def leavelog(ctx, channel: discord.TextChannel = None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id)
+    if channel is None:
+        cid = cfg["logs"].get("leave")
+        return await ctx.send(embed=make_embed("leave log", f"channel: {f'<#{cid}>' if cid else '`off`'}"))
+    cfg["logs"]["leave"] = channel.id; v53_save(ctx.guild.id)
+    await ctx.send(embed=make_embed("leave log", f"leave events will be logged in {channel.mention}."))
+
+
+@bot.command(aliases=["auditlogs"])
+async def auditlog(ctx, channel: discord.TextChannel = None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id)
+    if channel is None:
+        cid = cfg["logs"].get("audit")
+        return await ctx.send(embed=make_embed("audit log", f"channel: {f'<#{cid}>' if cid else '`off`'}"))
+    cfg["logs"]["audit"] = channel.id; v53_save(ctx.guild.id)
+    await ctx.send(embed=make_embed("audit log", f"moderation and security events will be logged in {channel.mention}."))
+
+
+@bot.command(aliases=["leave"])
+async def goodbye(ctx, action="status", *, text=None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id)
+    good = cfg.setdefault("goodbye", {"enabled": False, "channel": None, "message": "goodbye {username} — we'll miss you."})
+    action = action.lower()
+    if action in {"on", "enable"}:
+        good["enabled"] = True
+    elif action in {"off", "disable"}:
+        good["enabled"] = False
+    elif action in {"channel", "setchannel"}:
+        channel = v53_channel(text, ctx)
+        if not channel: return await ctx.send(embed=make_embed("goodbye", f"usage: `{PREFIX}goodbye channel #channel`"))
+        good["channel"] = channel.id; good["enabled"] = True
+    elif action in {"message", "text"}:
+        if not text: return await ctx.send(embed=make_embed("goodbye", f"usage: `{PREFIX}goodbye message goodbye {{username}}`"))
+        good["message"] = text[:1800]; good["enabled"] = True
+    elif action == "reset":
+        cfg.pop("goodbye", None); v53_save(ctx.guild.id)
+        return await ctx.send(embed=make_embed("goodbye", "configuration reset."))
+    elif action == "status":
+        channel = ctx.guild.get_channel(good.get("channel")) if good.get("channel") else None
+        return await ctx.send(embed=make_embed("goodbye", f"**Enabled**\n`{good.get('enabled', False)}`\n\n**Channel**\n{channel.mention if channel else '`server system channel`'}\n\n**Message**\n{good.get('message')}"))
+    v53_save(ctx.guild.id)
+    await ctx.send(embed=make_embed("goodbye updated", "the goodbye configuration was updated."))
+
+
+@bot.command()
+async def gallery(ctx, action="status", channel: discord.TextChannel = None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id)
+    chans = set(int(x) for x in cfg.get("gallery_channels", []))
+    action = action.lower()
+    if action in {"add", "on", "enable"}:
+        channel = channel or ctx.channel
+        chans.add(channel.id)
+    elif action in {"remove", "off", "disable"}:
+        channel = channel or ctx.channel
+        chans.discard(channel.id)
+    elif action == "list":
+        return await ctx.send(embed=make_embed("gallery channels", "\n".join(f"• <#{x}>" for x in sorted(chans)) or "none configured."))
+    else:
+        return await ctx.send(embed=make_embed("gallery", f"use `{PREFIX}gallery add #channel`, `{PREFIX}gallery remove #channel`, or `{PREFIX}gallery list`."))
+    cfg["gallery_channels"] = sorted(chans); v53_save(ctx.guild.id)
+    await ctx.send(embed=make_embed("gallery", f"{channel.mention} is now {'a gallery channel' if channel.id in chans else 'not a gallery channel'}."))
+
+
+@bot.command(aliases=["automod"])
+async def protection(ctx, action="status", feature=None, value=None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id); auto = cfg["automod"]
+    action = action.lower()
+    if action in {"status", "show"}:
+        return await ctx.send(embed=make_embed("protection", "\n".join(f"**{k.title()}** · `{v}`" for k,v in auto.items())))
+    if action in {"on", "enable", "off", "disable"} and feature:
+        key = feature.lower()
+        aliases = {"link":"links", "links":"links", "caps":"caps", "spam":"spam", "mention":"mentions", "mentions":"mentions"}
+        key = aliases.get(key)
+        if key is None: return await ctx.send(embed=make_embed("protection", "features: `links`, `caps`, `spam`, `mentions`."))
+        auto[key] = action in {"on", "enable"}
+        v53_save(ctx.guild.id)
+        return await ctx.send(embed=make_embed("protection updated", f"`{key}` → `{auto[key]}`"))
+    return await ctx.send(embed=make_embed("protection", f"usage: `{PREFIX}protection <on|off> <links|caps|spam|mentions>`"))
+
+
+@bot.command(aliases=["aliasadd"])
+async def alias(ctx, action="list", shortcut=None, *, command=None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id); aliases = cfg["aliases"]
+    action = action.lower()
+    if action == "list":
+        return await ctx.send(embed=make_embed("aliases", "\n".join(f"`{k}` → `{v}`" for k,v in sorted(aliases.items())) or "no custom aliases."))
+    if action in {"add", "set"}:
+        if not shortcut or not command: return await ctx.send(embed=make_embed("alias", f"usage: `{PREFIX}alias add shortcut command`"))
+        target = bot.get_command(command.split()[0].lower())
+        if not target: return await ctx.send(embed=make_embed("alias", "that command does not exist."))
+        shortcut = shortcut.lower().strip().lstrip(PREFIX)
+        if bot.get_command(shortcut): return await ctx.send(embed=make_embed("alias", "that name is already a bot command."))
+        aliases[shortcut] = target.qualified_name; v53_save(ctx.guild.id)
+        return await ctx.send(embed=make_embed("alias added", f"`{PREFIX}{shortcut}` → `{PREFIX}{target.qualified_name}`"))
+    if action in {"remove", "delete"}:
+        if not shortcut: return await ctx.send(embed=make_embed("alias", f"usage: `{PREFIX}alias remove shortcut`"))
+        aliases.pop(shortcut.lower().lstrip(PREFIX), None); v53_save(ctx.guild.id)
+        return await ctx.send(embed=make_embed("alias removed", f"removed `{PREFIX}{shortcut}`."))
+    if action == "reset":
+        aliases.clear(); v53_save(ctx.guild.id)
+        return await ctx.send(embed=make_embed("aliases reset", "all custom aliases were removed."))
+    return await ctx.send(embed=make_embed("alias", f"usage: `{PREFIX}alias <add|remove|list|reset> ...`"))
+
+
+@bot.command(aliases=["disabled"])
+async def commandtoggle(ctx, action="list", command_name=None):
+    if not v53_can_manage(ctx): return
+    cfg = v53cfg(ctx.guild.id); disabled = cfg["disabled_commands"]
+    action = action.lower()
+    if action == "list":
+        lines = [f"`{k}` · {', '.join(f'<#{x}>' for x in v) if v else '`all channels`'}" for k,v in sorted(disabled.items())]
+        return await ctx.send(embed=make_embed("disabled commands", "\n".join(lines) or "nothing disabled."))
+    if not command_name: return await ctx.send(embed=make_embed("command toggle", f"usage: `{PREFIX}commandtoggle <on|off|list> command`"))
+    name = command_name.lower().lstrip(PREFIX)
+    if not bot.get_command(name): return await ctx.send(embed=make_embed("command toggle", "that command does not exist."))
+    channels = set(int(x) for x in disabled.get(name, []))
+    if action in {"off", "disable"}:
+        channels.add(ctx.channel.id); disabled[name] = sorted(channels)
+        message = f"`{PREFIX}{name}` is disabled in {ctx.channel.mention}."
+    elif action in {"on", "enable"}:
+        channels.discard(ctx.channel.id)
+        if channels: disabled[name] = sorted(channels)
+        else: disabled.pop(name, None)
+        message = f"`{PREFIX}{name}` is enabled in {ctx.channel.mention}."
+    else:
+        return await ctx.send(embed=make_embed("command toggle", f"usage: `{PREFIX}commandtoggle <on|off|list> command`"))
+    v53_save(ctx.guild.id); await ctx.send(embed=make_embed("command toggle", message))
+
+
+@bot.command(aliases=["rolecount"])
+async def count(ctx, role: discord.Role = None):
+    if role is None:
+        return await ctx.send(embed=make_embed("count", f"members: `{ctx.guild.member_count or len(ctx.guild.members)}`"))
+    await ctx.send(embed=make_embed("role count", f"{role.mention}\n\n`{sum(1 for m in ctx.guild.members if role in m.roles)}` members"))
+
+
+@bot.command(aliases=["toproles"])
+async def rolelist(ctx):
+    roles = [r for r in ctx.guild.roles if not r.is_default()]
+    roles.sort(key=lambda r: (r.position, r.id), reverse=True)
+    lines = [f"`{i:02}` {r.mention} · `{sum(1 for m in ctx.guild.members if r in m.roles)}`" for i,r in enumerate(roles[:25], 1)]
+    await ctx.send(embed=make_embed("role overview", "\n".join(lines) or "no roles."))
+
+
+@bot.command(aliases=["channels"])
+async def channelstatsall(ctx):
+    counts = {"text": sum(isinstance(c, discord.TextChannel) for c in ctx.guild.channels), "voice": sum(isinstance(c, discord.VoiceChannel) for c in ctx.guild.channels), "category": sum(isinstance(c, discord.CategoryChannel) for c in ctx.guild.channels), "forum": sum(isinstance(c, discord.ForumChannel) for c in ctx.guild.channels)}
+    await ctx.send(embed=make_embed("channel overview", "\n".join(f"**{k.title()}** · `{v}`" for k,v in counts.items())))
+
+
+@bot.command()
+async def memberstats(ctx):
+    humans = sum(not m.bot for m in ctx.guild.members); bots = sum(m.bot for m in ctx.guild.members); online = sum(bool(m.status != discord.Status.offline) for m in ctx.guild.members)
+    await ctx.send(embed=make_embed("member statistics", f"**Total** · `{len(ctx.guild.members)}`\n**Humans** · `{humans}`\n**Bots** · `{bots}`\n**Online / idle / dnd** · `{online}`"))
+
+
+@bot.command(aliases=["userinfoid"])
+async def usersearch(ctx, user_id: int):
+    member = ctx.guild.get_member(user_id)
+    if not member:
+        try: member = await bot.fetch_user(user_id)
+        except discord.HTTPException: return await ctx.send(embed=make_embed("user search", "that user could not be found."))
+    await ctx.send(embed=make_embed("user search", f"**User**\n{member.mention if hasattr(member, 'mention') else member}\n\n**ID**\n`{member.id}`"))
+
+
+@bot.command(aliases=["topicset"])
+async def settopic(ctx, *, topic=None):
+    if not ctx.author.guild_permissions.manage_channels: return
+    if topic is None: return await ctx.send(embed=make_embed("topic", f"current topic: {ctx.channel.topic or '`none`'}"))
+    await ctx.channel.edit(topic=topic[:1024], reason=f"Topic changed by {ctx.author}")
+    await ctx.send(embed=make_embed("topic updated", "channel topic updated."))
+
+
+@bot.command()
+async def clone(ctx, channel: discord.abc.GuildChannel = None, *, name=None):
+    if not has_manage_server(ctx): return
+    channel = channel or ctx.channel
+    try:
+        new = await channel.clone(name=name or channel.name, reason=f"Cloned by {ctx.author}")
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("clone", "Discord rejected the channel clone."))
+    await ctx.send(embed=make_embed("channel cloned", f"created {new.mention}."))
+
+
+@bot.command(aliases=["rmrole"])
+async def massrole(ctx, action="add", role: discord.Role = None):
+    if not has_manage_roles(ctx) or role is None: return
+    if role >= ctx.guild.me.top_role or role.is_default() or role.managed:
+        return await ctx.send(embed=make_embed("mass role", "I cannot manage that role."))
+    members = [m for m in ctx.guild.members if not m.bot]
+    changed = 0
+    for member in members:
+        try:
+            if action.lower() in {"add", "give"} and role not in member.roles:
+                await member.add_roles(role, reason=f"Mass role by {ctx.author}"); changed += 1
+            elif action.lower() in {"remove", "take"} and role in member.roles:
+                await member.remove_roles(role, reason=f"Mass role by {ctx.author}"); changed += 1
+        except discord.HTTPException:
+            pass
+        if changed and changed % 10 == 0: await asyncio.sleep(0.5)
+    await ctx.send(embed=make_embed("mass role", f"changed `{changed}` members."))
+
+
+@bot.command(aliases=["remindme"])
+async def timer(ctx, duration: str, *, text="timer finished"):
+    seconds = parse_duration(duration)
+    if not seconds or seconds < 1 or seconds > 604800:
+        return await ctx.send(embed=make_embed("timer", "duration must be between 1 second and 7 days."))
+    await ctx.send(embed=make_embed("timer set", f"I'll remind you <t:{int(time.time()+seconds)}:R>."))
+    await asyncio.sleep(seconds)
+    try: await ctx.author.send(embed=make_embed("timer", text[:1800]))
+    except discord.HTTPException: pass
+
+
+@bot.command(aliases=["sayembed"])
+async def embed(ctx, *, text):
+    if not v53_can_manage(ctx): return
+    e = make_embed(None, text[:4000])
+    try: await ctx.message.delete()
+    except discord.HTTPException: pass
+    await ctx.send(embed=e)
+
+
+@bot.command()
+async def cleanbots(ctx, amount: int = 100):
+    if not ctx.author.guild_permissions.manage_messages: return
+    amount = max(1, min(amount, 100))
+    deleted = await ctx.channel.purge(limit=amount + 1, check=lambda m: m.author.bot)
+    await ctx.send(embed=make_embed("bot cleanup", f"deleted `{max(0, len(deleted)-1)}` bot messages."), delete_after=4)
+
+
+@bot.command()
+async def invitecheck(ctx):
+    if not ctx.author.guild_permissions.manage_guild: return
+    try:
+        invites = await ctx.guild.invites()
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("invites", "I need Manage Server to inspect invites."))
+    invites.sort(key=lambda x: x.uses or 0, reverse=True)
+    lines = [f"`{i.uses or 0}` uses · `{i.code}` · {i.inviter.mention if i.inviter else 'unknown'}" for i in invites[:20]]
+    await ctx.send(embed=make_embed("server invites", "\n".join(lines) or "no invites found."))
+
+
+@bot.command(aliases=["modconfig"])
+async def logconfig(ctx, action="status", channel: discord.TextChannel = None):
+    if not v53_can_manage(ctx): return
+    cfg=v53cfg(ctx.guild.id); logs=cfg["logs"]; action=action.lower()
+    if action in {"status", "view"}:
+        return await ctx.send(embed=make_embed("log configuration", f"join: {f'<#{logs.get("join")}>' if logs.get('join') else '`off`'}\nleave: {f'<#{logs.get("leave")}>' if logs.get('leave') else '`off`'}\naudit: {f'<#{logs.get("audit")}>' if logs.get('audit') else '`off`'}"))
+    if action not in {"join", "leave", "audit"} or not channel:
+        return await ctx.send(embed=make_embed("log configuration", f"usage: `{PREFIX}logconfig <join|leave|audit> #channel`"))
+    logs[action]=channel.id; v53_save(ctx.guild.id)
+    await ctx.send(embed=make_embed("log configuration", f"{action} logs → {channel.mention}"))
+
+
+# Custom aliases are dispatched before normal command parsing. This keeps aliases
+# guild-local and supports arguments, while leaving the normal prefix untouched.
+@bot.before_invoke
+async def _v53_command_gate(ctx):
+    if not ctx.guild:
+        return
+    cfg = v53cfg(ctx.guild.id)
+    disabled = cfg.get("disabled_commands", {})
+    name = getattr(ctx.command, "qualified_name", "").lower()
+    if name and ctx.channel.id in [int(x) for x in disabled.get(name, [])] and not ctx.author.guild_permissions.administrator:
+        raise commands.CheckFailure("command disabled in this channel")
+
+
+@bot.event
+async def on_member_remove(member):
+    cfg = v53cfg(member.guild.id)
+    good = cfg.get("goodbye", {})
+    if good.get("enabled"):
+        channel = member.guild.get_channel(int(good.get("channel"))) if good.get("channel") else member.guild.system_channel
+        if channel:
+            text = str(good.get("message", "goodbye {username} — we'll miss you."))
+            replacements = {"{user}": member.mention, "{mention}": member.mention, "{username}": member.name, "{displayname}": member.display_name, "{server}": member.guild.name, "{membercount}": str(member.guild.member_count or 0), "{id}": str(member.id)}
+            for k,v in replacements.items(): text=text.replace(k,v)
+            try: await channel.send(embed=make_embed("goodbye", text))
+            except discord.HTTPException: pass
+    cid = cfg.get("logs", {}).get("leave")
+    channel = member.guild.get_channel(int(cid)) if cid else None
+    if channel:
+        try: await channel.send(embed=make_embed("member left", f"{member.mention} · `{member.id}`\n\ncreated <t:{int(member.created_at.timestamp())}:R>"))
+        except discord.HTTPException: pass
+
+
+@bot.event
+async def on_message_edit(before, after):
+    if before.guild and not before.author.bot and before.content != after.content:
+        cfg=v53cfg(before.guild.id); cid=cfg.get("logs", {}).get("audit"); channel=before.guild.get_channel(int(cid)) if cid else None
+        if channel:
+            try: await channel.send(embed=make_embed("message edited", f"**Author** {before.author.mention}\n**Channel** {before.channel.mention}\n\n**Before**\n{before.content[:900] or '`empty`'}\n\n**After**\n{after.content[:900] or '`empty`'}\n\n[Jump to message](https://discord.com/channels/{before.guild.id}/{before.channel.id}/{after.id})"))
+            except discord.HTTPException: pass
+
 # Extra category documentation for the command browser.
 CATEGORIES.extend([
     ("Management", ["memberlist", "countrole", "channelstats", "channelclone", "roleclone", "roleall", "unroleall", "lockdown", "unlockdown", "cleanup", "suggestchannel", "suggest", "starboard"]),
@@ -3182,6 +3679,8 @@ async def on_command_error(ctx, error):
         return await ctx.send(embed=make_embed("bot permission missing", "I don't have the Discord permission required for this command."))
     if isinstance(error, commands.CommandOnCooldown):
         return await ctx.send(embed=make_embed("slow down", f"Try again <t:{int(time.time()+error.retry_after)}:R>."))
+    if isinstance(error, commands.CheckFailure) and str(error) == "command disabled in this channel":
+        return await ctx.send(embed=make_embed("command disabled", f"`{PREFIX}{ctx.command.qualified_name}` is disabled in this channel."), delete_after=5)
     if isinstance(error, commands.CommandInvokeError):
         original=error.original
         print(f"Command error in {ctx.command}: {original!r}")
