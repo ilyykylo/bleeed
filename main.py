@@ -3429,7 +3429,7 @@ async def commandtoggle(ctx, action="list", command_name=None):
     v53_save(ctx.guild.id); await ctx.send(embed=make_embed("command toggle", message))
 
 
-@bot.command(aliases=["rolecount"])
+@bot.command()
 async def count(ctx, role: discord.Role = None):
     if role is None:
         return await ctx.send(embed=make_embed("count", f"members: `{ctx.guild.member_count or len(ctx.guild.members)}`"))
