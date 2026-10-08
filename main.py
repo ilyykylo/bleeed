@@ -3251,11 +3251,14 @@ async def settings(ctx, action="view", key=None, *, value=None):
     if action in {"view", "show"}:
         logs = cfg.get("logs", {})
         automod = cfg.get("automod", {})
+        join_log = f"<#{logs.get('join')}>" if logs.get("join") else "`off`"
+        leave_log = f"<#{logs.get('leave')}>" if logs.get("leave") else "`off`"
+        audit_log = f"<#{logs.get('audit')}>" if logs.get("audit") else "`off`"
         body = (
             f"**Prefix**\n`{PREFIX}`\n\n"
-            f"**Join log**\n{f'<#{logs.get("join")}>' if logs.get('join') else '`off`'}\n\n"
-            f"**Leave log**\n{f'<#{logs.get("leave")}>' if logs.get('leave') else '`off`'}\n\n"
-            f"**Audit log**\n{f'<#{logs.get("audit")}>' if logs.get('audit') else '`off`'}\n\n"
+            f"**Join log**\n{join_log}\n\n"
+            f"**Leave log**\n{leave_log}\n\n"
+            f"**Audit log**\n{audit_log}\n\n"
             f"**Automod**\nlinks=`{automod.get('links', False)}` · caps=`{automod.get('caps', False)}` · spam=`{automod.get('spam', False)}` · mentions=`{automod.get('mentions', False)}`\n\n"
             f"**Gallery channels**\n`{len(cfg.get('gallery_channels', []))}`"
         )
