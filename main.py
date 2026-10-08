@@ -414,13 +414,24 @@ load_quarantine()
 
 
 def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
-    """Minimalist Greed-inspired visual system with original BLEEED layouts."""
+    """Consistent compact directory-style embed system inspired by modern Discord bot UIs."""
     e = discord.Embed(color=COLOR)
     if title:
         heading = f"# {title}"
         e.description = heading if not description else f"{heading}\n{description}"
     elif description:
         e.description = description
+    return e
+
+
+def directory_embed(title, subtitle=None, *, ctx=None):
+    e = discord.Embed(color=COLOR)
+    lines = [f"# {title}"]
+    if subtitle:
+        lines.append(subtitle)
+    e.description = "\n".join(lines)
+    if ctx and getattr(ctx.guild, "icon", None):
+        e.set_thumbnail(url=ctx.guild.icon.url)
     return e
 
 def info_embed(ctx, title, fields, *, thumbnail=True):
@@ -450,7 +461,7 @@ def action_embed(message, *, added=False, removed=False):
         icon = "<:remove:1557785190183600258>"
     else:
         icon = ""
-    return discord.Embed(description=f"{icon} {message}".strip(), color=0x5865F2)
+    return discord.Embed(description=f"{icon} {message}".strip(), color=COLOR)
 
 
 def role_ok(member, role_ids):
@@ -565,7 +576,7 @@ COMMAND_INFO = {
     "announce": ("Send a server announcement embed.", "announce <message>", "announce server event tonight!", []),
     "slowmode": ("Set the current channel slowmode.", "slowmode <seconds>", "slowmode 5", []),
     "nick": ("Change a member's nickname.", "nick <member> [nickname]", "nick @user New Name", []),
-    "addrole": ("Give a role to a member.", "addrole <member> <role>", "addrole @user @VIP", []),
+    "role": ("Give a role to a member.", "role <member> <role>", "role @user @VIP", ["r"]),
     "removerole": ("Remove a role from a member.", "removerole <member> <role>", "removerole @user @VIP", []),
     "vanity": ("Configure the /bleeed status role and its customizable embed.", "vanity [role|channel|title|description|color|image|thumbnail|preview|settings|reset|off]", "vanity channel #vanity", []),
     "deleterole": ("Delete a server role.", "deleterole <role>", "deleterole @OldRole", ["delrole", "roledelete"]),
@@ -620,10 +631,39 @@ COMMAND_INFO.update({
     "invitecheck": ("List server invites and their usage.", "invitecheck", "invitecheck", ["invites"]),
 })
 
+
+COMMAND_INFO.update({
+    "memberinfo": ("Show detailed member information.", "memberinfo [member]", "memberinfo @user", []),
+    "rolecount": ("Count members with a role.", "rolecount <role>", "rolecount @Staff", []),
+    "categorylist": ("List server categories and channel counts.", "categorylist", "categorylist", []),
+    "threadlist": ("List active server threads.", "threadlist", "threadlist", []),
+    "forumchannels": ("List server forum channels.", "forumchannels", "forumchannels", []),
+    "serverfeatures": ("Show enabled Discord server features.", "serverfeatures", "serverfeatures", []),
+    "boosters": ("List current server boosters.", "boosters", "boosters", []),
+    "serverroles": ("List server roles with member counts.", "serverroles", "serverroles", []),
+    "memberpermissions": ("Show a member's permissions.", "memberpermissions [member]", "memberpermissions @user", []),
+    "rename": ("Rename the server.", "rename <name>", "rename My Server", []),
+    "slowmodeall": ("Set slowmode across all manageable text channels.", "slowmodeall [seconds]", "slowmodeall 5", []),
+    "lockall": ("Lock all manageable text channels.", "lockall", "lockall", []),
+    "unlockall": ("Unlock all manageable text channels.", "unlockall", "unlockall", []),
+    "modstats": ("Show a member's moderation statistics.", "modstats [member]", "modstats @user", []),
+    "modrecent": ("Show the latest moderation cases in the server.", "modrecent [amount]", "modrecent 10", []),
+    "deafen": ("Server-deafen a member in voice.", "deafen <member> [reason]", "deafen @user disruptive", []),
+    "undeafen": ("Remove a server deafen.", "undeafen <member>", "undeafen @user", []),
+    "voicekick": ("Disconnect a member from voice.", "voicekick <member> [reason]", "voicekick @user disruptive", []),
+    "warnlist": ("Show members with the most warnings.", "warnlist [amount]", "warnlist 10", []),
+    "raidmode": ("Quickly enable or disable raid protection.", "raidmode <on|off|status>", "raidmode on", []),
+    "antinukewindow": ("Set the antinuke detection window.", "antinukewindow [seconds]", "antinukewindow 15", []),
+    "antiraidwindow": ("Set the antiraid join window.", "antiraidwindow [seconds]", "antiraidwindow 15", []),
+    "antinukestatus": ("Show detailed antinuke settings.", "antinukestatus", "antinukestatus", []),
+    "antiraidstatus": ("Show detailed antiraid settings.", "antiraidstatus", "antiraidstatus", []),
+    "securityreset": ("Reset antinuke, antiraid, and word-filter settings.", "securityreset", "securityreset", []),
+})
+
 CATEGORIES = [
     ("Information", ["help", "commands", "servers", "ping", "uptime", "avatar", "banner", "botinfo", "userinfo", "serverinfo", "channelinfo", "roleinfo", "membercount", "roles", "emojis", "stickers", "permissions", "guildicon", "servericon", "boost", "serverstats", "firstmessage", "invites", "inviteinfo", "voiceinfo", "id", "joined", "created"]),
     ("Server", ["welcome", "disablewelcome", "booster", "boosterremove", "ar", "autorole", "autoreact", "poll", "ticket", "close", "giveaway", "gaw", "announce", "remind", "vanity"]),
-    ("Roles", ["addrole", "removerole", "deleterole", "changerole", "create", "create role", "create channel", "create vc", "br"]),
+    ("Roles", ["role", "removerole", "deleterole", "changerole", "create", "create role", "create channel", "create vc", "br"]),
     ("Security", ["antinuke", "antiraid", "filter", "security"]),
     ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "unwarn", "clearwarnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "topic", "say"]),
     ("Fun", ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "wyr", "mock", "reverse", "truth", "dare", "wouldyou"]),
@@ -775,7 +815,7 @@ class ServerListView(discord.ui.View):
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
 class CommandsView(discord.ui.View):
-    """Private-to-author command browser with a compact bleed.bot-inspired layout."""
+    """Compact command directory with the same information hierarchy throughout bleeed."""
     def __init__(self, pages, author_id):
         super().__init__(timeout=180)
         self.pages = pages
@@ -791,23 +831,30 @@ class CommandsView(discord.ui.View):
 
     def embed(self):
         page = self.pages[self.index]
-        total = sum(len(block.split()) for block in page.splitlines() if block.startswith("`") or "`" in block)
-        description = (
-            f"{page}\n\n"
-            f"-# {self.index + 1}/{len(self.pages)} · bleeed command directory\n"
-            f"-# use `{PREFIX}help <command>` for detailed usage"
+        e = directory_embed("commands")
+        # Render each category as a compact field, matching the directory/card
+        # hierarchy of the reference site while staying native to Discord.
+        blocks = page.split("\n\n")
+        total = 0
+        for block in blocks:
+            lines = block.splitlines()
+            if not lines:
+                continue
+            category = lines[0].lstrip("# ").strip()
+            command_line = " ".join(lines[1:]).strip()
+            names = [x.strip() for x in command_line.split("·") if x.strip()]
+            total += len(names)
+            if names:
+                e.add_field(name=f"**{category}** · `{len(names)}`", value=" · ".join(names), inline=False)
+        e.description += (
+            f"\n\n**prefix** `{PREFIX}`  **search** `{PREFIX}help <command>`"
+            f"\n-# page {self.index + 1}/{len(self.pages)} · {total} commands"
         )
-        e = make_embed("commands", description)
-        e.set_footer(text=f"{total} entries on this page")
         return e
 
     async def interaction_check(self, interaction: discord.Interaction):
-        # Command browsers are private to the person who invoked them.
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "this command menu belongs to the person who opened it.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("this command menu belongs to the person who opened it.", ephemeral=True)
             return False
         return True
 
@@ -840,7 +887,6 @@ class CommandsView(discord.ui.View):
             await interaction.message.delete()
         except discord.HTTPException:
             await interaction.response.edit_message(view=None)
-
 
 
 @bot.event
@@ -1150,13 +1196,34 @@ async def on_message(message):
 async def help(ctx, command_name=None):
     if command_name:
         cmd = bot.get_command(command_name.lower())
-        if not cmd: return await ctx.send(embed=make_embed("command not found", f"I couldn't find `,{command_name}`. Use `,commands` to see every command."))
+        if not cmd:
+            return await ctx.send(embed=make_embed("command not found", f"I couldn't find `,{command_name}`.\n\nuse `{PREFIX}commands` to browse every command."))
         info = COMMAND_INFO.get(cmd.name, (cmd.help or "No description available.", cmd.qualified_name, cmd.qualified_name, cmd.aliases))
         description, syntax, example, aliases = info
-        alias_text = ", ".join(aliases) if aliases else "none"
-        desc = f"# Command: {cmd.name}\n{description}\n\n**Aliases**\n{alias_text}\n\n**Usage**\n`Syntax: {PREFIX}{syntax}\nExample: {PREFIX}{example}`"
+        alias_text = ", ".join(f"`{a}`" for a in aliases) if aliases else "n/a"
+        parameters = syntax.split(" ", 1)[1] if " " in syntax else "n/a"
+        parameters = parameters.strip() or "n/a"
+        if cmd.name in {"servers", "guilds", "maintenance", "status", "stream"}:
+            permission = "Server Owner"
+        elif getattr(cmd, "checks", None):
+            permission = "Configured server permission"
+        else:
+            permission = "n/a"
+        desc = (
+            f"# Command: {cmd.qualified_name}\n"
+            f"{description}\n\n"
+            f"**Aliases**\n{alias_text}\n\n"
+            f"**Parameters**\n{parameters}\n\n"
+            f"**Information**\n{permission}\n\n"
+            f"**Usage**\n`Syntax: {PREFIX}{syntax}\nExample: {PREFIX}{example}`"
+            f"\n\n-# Module: {getattr(cmd, 'cog_name', None) or 'bleeed'}"
+        )
         return await ctx.send(embed=make_embed(None, desc))
-    e = make_embed("bleeed", f"to use **bleeed** you must use the prefix `{PREFIX}`.\n\nexample: `{PREFIX}ping`\n\nuse `{PREFIX}commands` to see every command.\nuse `{PREFIX}help <command>` for command usage, aliases, and examples.")
+    e = directory_embed("bleeed", "premium-style moderation, security, server management and utility tools", ctx=ctx)
+    e.add_field(name="**Prefix**", value=f"`{PREFIX}`", inline=True)
+    e.add_field(name="**Commands**", value=f"`{len(COMMAND_INFO)}`", inline=True)
+    e.add_field(name="**Help**", value=f"`{PREFIX}help <command>`", inline=True)
+    e.description += f"\n\nuse `{PREFIX}commands` to browse the command directory."
     await ctx.send(embed=e)
 
 
@@ -2348,7 +2415,7 @@ async def nick(ctx, member: discord.Member, *, nickname: str = None):
     await ctx.send(embed=make_embed("nickname", f"nickname updated for {member.mention}."))
 
 
-@bot.hybrid_command(name="addrole")
+@bot.hybrid_command(name="role", aliases=["r"])
 @commands.has_permissions(manage_roles=True)
 async def addrole(ctx, member: discord.Member, role: discord.Role):
     """Give a role to a member."""
@@ -3560,6 +3627,393 @@ async def logconfig(ctx, action="status", channel: discord.TextChannel = None):
 
 # Custom aliases are dispatched before normal command parsing. This keeps aliases
 # guild-local and supports arguments, while leaving the normal prefix untouched.
+
+# BLEEED expansion: extra lightweight information, utility and moderation tools.
+@bot.command()
+async def bots(ctx):
+    n=sum(m.bot for m in ctx.guild.members)
+    await ctx.send(embed=result_embed("Bots", "Count", f"**{n}**", extra=[("Share", f"{n/max(ctx.guild.member_count or 1,1)*100:.1f}%")]))
+
+@bot.command()
+async def humans(ctx):
+    n=sum(not m.bot for m in ctx.guild.members)
+    await ctx.send(embed=result_embed("Humans", "Count", f"**{n}**", extra=[("Share", f"{n/max(ctx.guild.member_count or 1,1)*100:.1f}%")]))
+
+@bot.command(aliases=["memberroles"])
+async def userroles(ctx, member:discord.Member=None):
+    member=member or ctx.author; roles=[r for r in reversed(member.roles) if r != ctx.guild.default_role]
+    await ctx.send(embed=make_embed("member roles", f"**User**\n{member.mention}\n\n**Roles**\n"+(" ".join(r.mention for r in roles) or "`none`")))
+
+@bot.command()
+async def rolemembers(ctx, role:discord.Role):
+    ms=list(role.members); lines=[f"`{i:02}` {m.mention}" for i,m in enumerate(ms[:50],1)]
+    await ctx.send(embed=make_embed("role members", f"**Role** {role.mention}\n\n"+("\n".join(lines) or "`none`")+(f"\n\n-# Showing {min(50,len(ms))}/{len(ms)}" if len(ms)>50 else "")))
+
+@bot.command()
+async def channelcount(ctx):
+    t=len(ctx.guild.text_channels); v=len(ctx.guild.voice_channels); c=len(ctx.guild.categories)
+    await ctx.send(embed=make_embed("channel count", f"**Text** `{t}`\n**Voice** `{v}`\n**Categories** `{c}`\n**Total** `{t+v+c}`"))
+
+@bot.command()
+async def categorycount(ctx):
+    await ctx.send(embed=result_embed("Category Count","Categories",f"**{len(ctx.guild.categories)}**"))
+
+@bot.command()
+async def textchannels(ctx):
+    await ctx.send(embed=make_embed("text channels", "\n".join(f"`{i:02}` {c.mention}" for i,c in enumerate(ctx.guild.text_channels[:75],1)) or "`none`"))
+
+@bot.command()
+async def voicechannels(ctx):
+    await ctx.send(embed=make_embed("voice channels", "\n".join(f"`{i:02}` **{c.name}** · `{len(c.members)}`" for i,c in enumerate(ctx.guild.voice_channels[:75],1)) or "`none`"))
+
+@bot.command()
+async def servercreated(ctx):
+    d=ctx.guild.created_at; await ctx.send(embed=result_embed("Server Created","Date",f"<t:{int(d.timestamp())}:F>",extra=[("Relative",f"<t:{int(d.timestamp())}:R>")]))
+
+@bot.command()
+async def memberjoined(ctx, member:discord.Member=None):
+    member=member or ctx.author; d=member.joined_at
+    await ctx.send(embed=result_embed("Member Joined","User",member.mention,extra=[("Date",f"<t:{int(d.timestamp())}:F>"),("Relative",f"<t:{int(d.timestamp())}:R>")]) if d else make_embed("member joined","No join date is available."))
+
+@bot.command()
+async def accountage(ctx, member:discord.Member=None):
+    member=member or ctx.author; d=member.created_at
+    await ctx.send(embed=result_embed("Account Age","User",member.mention,extra=[("Created",f"<t:{int(d.timestamp())}:F>"),("Relative",f"<t:{int(d.timestamp())}:R>")]))
+
+@bot.command()
+async def serverbanner(ctx):
+    if not ctx.guild.banner: return await ctx.send(embed=make_embed("server banner","This server does not have a banner."))
+    e=make_embed("server banner",f"[Open banner]({ctx.guild.banner.url})"); e.set_image(url=ctx.guild.banner.url); await ctx.send(embed=e)
+
+@bot.command()
+async def emojiinfo(ctx, emoji:discord.Emoji):
+    await ctx.send(embed=make_embed("emoji info",f"**Name** `{emoji.name}`\n**ID** `{emoji.id}`\n**Animated** `{emoji.animated}`\n**Mention** `{emoji}`"))
+
+@bot.command()
+async def stickerinfo(ctx, sticker:discord.GuildSticker):
+    await ctx.send(embed=make_embed("sticker info",f"**Name** `{sticker.name}`\n**ID** `{sticker.id}`\n**Format** `{sticker.format}`\n**Description** {sticker.description or '`none`'}"))
+
+@bot.command()
+async def snowflake(ctx, value:int):
+    try: d=discord.utils.snowflake_time(value)
+    except (OverflowError,ValueError): return await ctx.send(embed=make_embed("snowflake","Invalid Discord snowflake."))
+    await ctx.send(embed=result_embed("Snowflake","ID",f"`{value}`",extra=[("Created",f"<t:{int(d.timestamp())}:F>"),("Relative",f"<t:{int(d.timestamp())}:R>")]))
+
+@bot.command()
+async def hex(ctx, value:str=None):
+    value=(value or "").lstrip('#')
+    if not re.fullmatch(r'[0-9a-fA-F]{6}',value): return await ctx.send(embed=make_embed("hex",f"Use `{PREFIX}hex #5865F2`"))
+    rgb=tuple(int(value[i:i+2],16) for i in (0,2,4)); await ctx.send(embed=result_embed("Hex","Color",f"`#{value.upper()}`",extra=[("RGB",f"`{rgb[0]}, {rgb[1]}, {rgb[2]}`"),("Integer",f"`{int(value,16)}`")]))
+
+@bot.command()
+async def randomchoice(ctx, *, choices):
+    opts=[x.strip() for x in choices.split('|') if x.strip()]
+    if len(opts)<2: return await ctx.send(embed=make_embed("random choice",f"Use `{PREFIX}randomchoice one | two | three`"))
+    await ctx.send(embed=result_embed("Random Choice","Selected",f"**{random.choice(opts)}**"))
+
+@bot.command()
+async def randommember(ctx, role:discord.Role=None):
+    pool=list(role.members) if role else [m for m in ctx.guild.members if not m.bot]
+    if not pool: return await ctx.send(embed=make_embed("random member","No eligible members."))
+    await ctx.send(embed=result_embed("Random Member","Selected",random.choice(pool).mention))
+
+@bot.command()
+async def rolepermissions(ctx, role:discord.Role):
+    p=[n.replace('_',' ') for n,v in role.permissions if v]
+    await ctx.send(embed=make_embed("role permissions",f"**Role** {role.mention}\n\n"+(' · '.join(f'`{x}`' for x in p) or '`none`')))
+
+@bot.command()
+async def channelpermissions(ctx, channel:discord.TextChannel=None, member:discord.Member=None):
+    channel=channel or ctx.channel; member=member or ctx.author; p=channel.permissions_for(member)
+    enabled=[n.replace('_',' ') for n,v in p if v]
+    await ctx.send(embed=make_embed("channel permissions",f"**Channel** {channel.mention}\n**User** {member.mention}\n\n"+(' · '.join(f'`{x}`' for x in enabled) or '`none`')))
+
+@bot.command()
+async def afklist(ctx):
+    ids={m.id for m in ctx.guild.members}; lines=[]
+    for uid,data in afk_data.items():
+        if uid in ids and ctx.guild.get_member(uid): lines.append(f"{ctx.guild.get_member(uid).mention} · {data.get('reason','AFK')}")
+    await ctx.send(embed=make_embed("afk list","\n".join(lines[:50]) or "`no members are currently AFK`"))
+
+@bot.command()
+async def pollresults(ctx, message_id:int):
+    try: msg=await ctx.channel.fetch_message(message_id)
+    except (discord.NotFound,discord.Forbidden,discord.HTTPException): return await ctx.send(embed=make_embed("poll results","I couldn't fetch that message."))
+    lines=[f"{r.emoji} `{r.count}`" for r in msg.reactions]
+    await ctx.send(embed=make_embed("poll results","\n".join(lines) or "`no reactions`"))
+
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def purgebots(ctx, amount:int=50):
+    amount=max(1,min(amount,100))
+    if not bot_can(ctx,'manage_messages'): return await ctx.send(embed=make_embed("bot permission missing","I need **Manage Messages**."))
+    deleted=await ctx.channel.purge(limit=amount,check=lambda m:m.author.bot)
+    await ctx.send(embed=action_embed(f"Removed {len(deleted)} bot messages.",removed=True),delete_after=3)
+
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def purgeuser(ctx, member:discord.Member, amount:int=50):
+    amount=max(1,min(amount,100))
+    if not bot_can(ctx,'manage_messages'): return await ctx.send(embed=make_embed("bot permission missing","I need **Manage Messages**."))
+    deleted=await ctx.channel.purge(limit=amount,check=lambda m:m.author.id==member.id)
+    await ctx.send(embed=action_embed(f"Removed {len(deleted)} messages from {member.mention}.",removed=True),delete_after=3)
+
+@bot.command()
+async def calc(ctx, *, expression):
+    import ast as _ast
+    allowed=(_ast.Expression,_ast.BinOp,_ast.UnaryOp,_ast.Add,_ast.Sub,_ast.Mult,_ast.Div,_ast.Mod,_ast.Pow,_ast.USub,_ast.UAdd,_ast.FloorDiv,_ast.Constant)
+    try:
+        tree=_ast.parse(expression,mode='eval')
+        if any(not isinstance(n,allowed) for n in _ast.walk(tree)): raise ValueError
+        if any(isinstance(n,_ast.Constant) and (not isinstance(n.value,(int,float)) or isinstance(n.value,bool)) for n in _ast.walk(tree)): raise ValueError
+        result=eval(compile(tree,'<calc>','eval'),{'__builtins__':{}},{})
+        if isinstance(result,float) and (result!=result or abs(result)==float('inf')): raise ValueError
+    except Exception: return await ctx.send(embed=make_embed("calculator",f"Invalid expression. Example: `{PREFIX}calc (12 + 8) * 3`"))
+    await ctx.send(embed=result_embed("Calculator","Expression",f"`{expression}`",extra=[("Result",f"**{result}**")]))
+
+@bot.command()
+async def unix(ctx, timestamp:int=None):
+    timestamp=timestamp or int(time.time())
+    try: d=datetime.fromtimestamp(timestamp,tz=timezone.utc)
+    except (OverflowError,OSError,ValueError): return await ctx.send(embed=make_embed("unix","Invalid timestamp."))
+    await ctx.send(embed=make_embed("unix",f"**Unix** `{timestamp}`\n\n**Discord** `<t:{timestamp}:F>`\n\n**Relative** `<t:{timestamp}:R>`\n\n**UTC** `{d:%Y-%m-%d %H:%M:%S}`"))
+
+@bot.command()
+async def channelage(ctx, channel:discord.TextChannel=None):
+    channel=channel or ctx.channel; d=channel.created_at
+    await ctx.send(embed=result_embed("Channel Age","Channel",channel.mention,extra=[("Created",f"<t:{int(d.timestamp())}:F>"),("Relative",f"<t:{int(d.timestamp())}:R>")]))
+
+@bot.command()
+async def roleage(ctx, role:discord.Role):
+    d=role.created_at; await ctx.send(embed=result_embed("Role Age","Role",role.mention,extra=[("Created",f"<t:{int(d.timestamp())}:F>"),("Relative",f"<t:{int(d.timestamp())}:R>")]))
+
+@bot.command()
+async def serverowner(ctx):
+    owner=ctx.guild.owner
+    await ctx.send(embed=result_embed("Server Owner","Owner",owner.mention,extra=[("ID",f"`{owner.id}`")]) if owner else make_embed("server owner","Owner unavailable."))
+
+
+# =========================
+# BLEEED SERVER / MODERATION / SECURITY EXPANSION
+# =========================
+
+@bot.command()
+async def memberinfo(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    roles = [r.mention for r in reversed(member.roles) if r != ctx.guild.default_role]
+    await ctx.send(embed=make_embed("member information", f"**User**\n{member.mention} · `{member.id}`\n\n**Account**\nCreated <t:{int(member.created_at.timestamp())}:R>\nJoined <t:{int(member.joined_at.timestamp())}:R>\nBot `{member.bot}`\n\n**Roles**\n{' '.join(roles) or '`none`'}"))
+
+@bot.command()
+async def rolecount(ctx, role: discord.Role):
+    count = len(role.members)
+    await ctx.send(embed=result_embed("Role Count", "Role", role.mention, extra=[("Members", f"`{count}`")]))
+
+@bot.command()
+async def categorylist(ctx):
+    lines = [f"`{i:02}` {c.mention} · `{len(c.channels)}` channels" for i,c in enumerate(ctx.guild.categories, 1)]
+    await ctx.send(embed=make_embed("categories", "\n".join(lines) or "`none`"))
+
+@bot.command()
+async def threadlist(ctx):
+    threads = list(ctx.guild.threads)
+    lines = [f"`{i:02}` {t.mention} · {t.parent.mention if t.parent else '`no parent`'}" for i,t in enumerate(threads[:50],1)]
+    await ctx.send(embed=make_embed("active threads", "\n".join(lines) or "`none`"))
+
+@bot.command()
+async def forumchannels(ctx):
+    forums = [c for c in ctx.guild.channels if isinstance(c, discord.ForumChannel)]
+    await ctx.send(embed=make_embed("forum channels", "\n".join(f"`{i:02}` {c.mention}" for i,c in enumerate(forums,1)) or "`none`"))
+
+@bot.command()
+async def serverfeatures(ctx):
+    features = sorted(str(x).replace('_',' ').lower() for x in ctx.guild.features)
+    await ctx.send(embed=make_embed("server features", " · ".join(f"`{x}`" for x in features) or "`none`"))
+
+@bot.command()
+async def boosters(ctx):
+    members = [m for m in ctx.guild.members if m.premium_since]
+    lines = [f"`{i:02}` {m.mention} · <t:{int(m.premium_since.timestamp())}:R>" for i,m in enumerate(sorted(members,key=lambda x:x.premium_since or datetime.min, reverse=True)[:50],1)]
+    await ctx.send(embed=make_embed("boosters", "\n".join(lines) or "`no boosters`"))
+
+@bot.command()
+async def serverroles(ctx):
+    roles = [r for r in reversed(ctx.guild.roles) if not r.is_default()]
+    lines = [f"`{i:02}` {r.mention} · `{len(r.members)}`" for i,r in enumerate(roles[:50],1)]
+    await ctx.send(embed=make_embed("server roles", "\n".join(lines) or "`none`"))
+
+@bot.command()
+async def memberpermissions(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    p = member.guild_permissions
+    enabled = [name.replace('_',' ') for name,value in p if value]
+    await ctx.send(embed=make_embed("member permissions", f"**User** {member.mention}\n\n" + (' · '.join(f'`{x}`' for x in enabled) or '`none`')))
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def rename(ctx, *, name):
+    name = name[:100].strip()
+    if not name: return await ctx.send(embed=make_embed("rename", "enter a server name."))
+    try:
+        await ctx.guild.edit(name=name, reason=f"Server renamed by {ctx.author}")
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("rename", "Discord rejected the server rename."))
+    await ctx.send(embed=action_embed(f"Renamed the server to **{discord.utils.escape_markdown(name)}**", added=True))
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def slowmodeall(ctx, seconds: int = 0):
+    if seconds < 0 or seconds > 21600:
+        return await ctx.send(embed=make_embed("slowmode all", "seconds must be between 0 and 21600."))
+    changed = 0
+    for channel in ctx.guild.text_channels:
+        if not channel.permissions_for(ctx.guild.me).manage_channels:
+            continue
+        try:
+            await channel.edit(slowmode_delay=seconds, reason=f"Slowmode all by {ctx.author}"); changed += 1
+        except discord.HTTPException: pass
+    await ctx.send(embed=make_embed("slowmode all", f"updated `{changed}` text channels to `{seconds}s`."))
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def unlockall(ctx):
+    changed=0
+    overwrite=ctx.guild.default_role
+    for channel in ctx.guild.text_channels:
+        if not channel.permissions_for(ctx.guild.me).manage_channels: continue
+        try:
+            await channel.set_permissions(overwrite, send_messages=True, reason=f"Unlock all by {ctx.author}"); changed+=1
+        except discord.HTTPException: pass
+    await ctx.send(embed=action_embed(f"Unlocked `{changed}` text channels.", added=True))
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def lockall(ctx):
+    changed=0
+    overwrite=ctx.guild.default_role
+    for channel in ctx.guild.text_channels:
+        if not channel.permissions_for(ctx.guild.me).manage_channels: continue
+        try:
+            await channel.set_permissions(overwrite, send_messages=False, reason=f"Lock all by {ctx.author}"); changed+=1
+        except discord.HTTPException: pass
+    await ctx.send(embed=action_embed(f"Locked `{changed}` text channels.", removed=True))
+
+@bot.command()
+async def modstats(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    entries = modlog_data[ctx.guild.id][member.id]
+    counts = defaultdict(int)
+    for e in entries: counts[e.get('action','Unknown')] += 1
+    body = '\n'.join(f"**{k}** · `{v}`" for k,v in sorted(counts.items())) or '`no recorded cases`'
+    await ctx.send(embed=make_embed("moderation statistics", f"**User** {member.mention}\n\n{body}"))
+
+@bot.command()
+async def modrecent(ctx, amount: int = 10):
+    amount=max(1,min(amount,25)); rows=[]
+    users=modlog_data[ctx.guild.id]
+    for uid, entries in users.items():
+        for e in entries: rows.append((e.get('timestamp',0),uid,e))
+    rows.sort(reverse=True,key=lambda x:x[0])
+    lines=[]
+    for ts,uid,e in rows[:amount]:
+        member=ctx.guild.get_member(uid); target=member.mention if member else f'`{uid}`'
+        lines.append(f"`{e.get('action','?')}` · {target} · <t:{int(ts)}:R>")
+    await ctx.send(embed=make_embed("recent moderation", '\n'.join(lines) or '`no cases recorded`'))
+
+@bot.command()
+@commands.has_permissions(moderate_members=True)
+async def deafen(ctx, member: discord.Member, *, reason="no reason provided"):
+    if not target_ok(ctx, member): return await ctx.send(embed=make_embed("cannot deafen member", "the target is above your or my highest role."))
+    if not member.voice: return await ctx.send(embed=make_embed("deafen", "that member is not in a voice channel."))
+    try: await member.edit(deafen=True, reason=reason)
+    except discord.HTTPException: return await ctx.send(embed=make_embed("deafen failed", "Discord rejected the action."))
+    record_modlog(ctx.guild, member, "Deafen", ctx.author, reason)
+    await ctx.send(embed=action_embed(f"Deafened {member.mention}.", added=True))
+
+@bot.command()
+@commands.has_permissions(moderate_members=True)
+async def undeafen(ctx, member: discord.Member):
+    if not target_ok(ctx, member): return await ctx.send(embed=make_embed("cannot undeafen member", "the target is above your or my highest role."))
+    try: await member.edit(deafen=False, reason=f"Undeafened by {ctx.author}")
+    except discord.HTTPException: return await ctx.send(embed=make_embed("undeafen failed", "Discord rejected the action."))
+    record_modlog(ctx.guild, member, "Undeafen", ctx.author, "Removed server deafen")
+    await ctx.send(embed=action_embed(f"Undeafened {member.mention}.", added=True))
+
+@bot.command()
+@commands.has_permissions(move_members=True)
+async def voicekick(ctx, member: discord.Member, *, reason="no reason provided"):
+    if not target_ok(ctx, member): return await ctx.send(embed=make_embed("cannot voice kick", "the target is above your or my highest role."))
+    if not member.voice: return await ctx.send(embed=make_embed("voice kick", "that member is not in a voice channel."))
+    try: await member.move_to(None, reason=reason)
+    except discord.HTTPException: return await ctx.send(embed=make_embed("voice kick failed", "Discord rejected the action."))
+    record_modlog(ctx.guild, member, "Voice Kick", ctx.author, reason)
+    await ctx.send(embed=action_embed(f"Disconnected {member.mention} from voice.", removed=True))
+
+@bot.command()
+async def warnlist(ctx, amount: int = 20):
+    rows=[]
+    for uid, entries in warning_data[ctx.guild.id].items():
+        if entries: rows.append((len(entries),uid))
+    rows.sort(reverse=True)
+    lines=[]
+    for count,uid in rows[:max(1,min(amount,50))]:
+        m=ctx.guild.get_member(uid); lines.append(f"`{count}` · {m.mention if m else f'`{uid}`'}")
+    await ctx.send(embed=make_embed("warning leaderboard", '\n'.join(lines) or '`no warnings recorded`'))
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def raidmode(ctx, mode: str = "status"):
+    mode=mode.lower()
+    cfg=antiraid_config[ctx.guild.id]
+    if mode in {"on","enable","strict"}: cfg["enabled"]=True
+    elif mode in {"off","disable","normal"}: cfg["enabled"]=False
+    elif mode not in {"status","show"}: return await ctx.send(embed=make_embed("raid mode", f"usage: `{PREFIX}raidmode <on|off|status>`"))
+    await ctx.send(embed=make_embed("raid mode", f"**Enabled** `{cfg['enabled']}`\n**Threshold** `{cfg['threshold']}` joins / `{cfg['window']}s`"))
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def antinukewindow(ctx, seconds: int = None):
+    cfg=antinuke_config[ctx.guild.id]
+    if seconds is None: return await ctx.send(embed=make_embed("antinuke window", f"current window: `{cfg['window']}s`"))
+    cfg['window']=max(3,min(seconds,120))
+    await ctx.send(embed=make_embed("antinuke window", f"window set to `{cfg['window']}s`."))
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def antiraidwindow(ctx, seconds: int = None):
+    cfg=antiraid_config[ctx.guild.id]
+    if seconds is None: return await ctx.send(embed=make_embed("antiraid window", f"current window: `{cfg['window']}s`"))
+    cfg['window']=max(3,min(seconds,120))
+    await ctx.send(embed=make_embed("antiraid window", f"window set to `{cfg['window']}s`."))
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def antinukestatus(ctx):
+    a=antinuke_config[ctx.guild.id]
+    await ctx.send(embed=make_embed("antinuke status", f"**Enabled** `{a['enabled']}`\n**Threshold** `{a['threshold']}`\n**Window** `{a['window']}s`\n**Action** `{a['action']}`"))
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def antiraidstatus(ctx):
+    a=antiraid_config[ctx.guild.id]
+    await ctx.send(embed=make_embed("antiraid status", f"**Enabled** `{a['enabled']}`\n**Threshold** `{a['threshold']}`\n**Window** `{a['window']}s`"))
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def securityreset(ctx):
+    antinuke_config[ctx.guild.id] = {"enabled":False,"threshold":3,"window":10,"action":"ban"}
+    antiraid_config[ctx.guild.id] = {"enabled":False,"threshold":8,"window":10}
+    filter_enabled[ctx.guild.id]=False
+    filter_words[ctx.guild.id].clear()
+    await ctx.send(embed=make_embed("security reset", "antinuke, antiraid, and the word filter were reset."))
+
+CATEGORIES.extend([
+    ("Server Plus", ["rename", "slowmodeall", "lockall", "unlockall", "categorylist", "threadlist", "forumchannels", "serverfeatures", "boosters", "serverroles"]),
+    ("Information Plus", ["memberinfo", "rolecount", "memberpermissions"]),
+    ("Moderation Plus", ["modstats", "modrecent", "deafen", "undeafen", "voicekick", "warnlist"]),
+    ("Antinuke", ["antinukestatus", "antinukewindow"]),
+    ("Antiraid", ["raidmode", "antiraidstatus", "antiraidwindow", "securityreset"]),
+])
+
 @bot.before_invoke
 async def _v53_command_gate(ctx):
     if not ctx.guild:
@@ -3598,6 +4052,16 @@ async def on_message_edit(before, after):
             try: await channel.send(embed=make_embed("message edited", f"**Author** {before.author.mention}\n**Channel** {before.channel.mention}\n\n**Before**\n{before.content[:900] or '`empty`'}\n\n**After**\n{after.content[:900] or '`empty`'}\n\n[Jump to message](https://discord.com/channels/{before.guild.id}/{before.channel.id}/{after.id})"))
             except discord.HTTPException: pass
 
+# Expanded BLEEED-style categories.
+CATEGORIES.extend([
+    ("Members", ["bots","humans","userroles","rolemembers","randommember","memberjoined","accountage","afklist"]),
+    ("Channels", ["channelcount","categorycount","textchannels","voicechannels","channelpermissions","channelage"]),
+    ("Server Tools", ["servercreated","serverbanner","serverowner","snowflake","unix"]),
+    ("Role Tools", ["rolepermissions","roleage"]),
+    ("Developer", ["hex","calc","randomchoice","emojiinfo","stickerinfo","pollresults"]),
+    ("Moderation Plus", ["purgebots","purgeuser"]),
+])
+
 # Extra category documentation for the command browser.
 CATEGORIES.extend([
     ("Management", ["memberlist", "countrole", "channelstats", "channelclone", "roleclone", "roleall", "unroleall", "lockdown", "unlockdown", "cleanup", "suggestchannel", "suggest", "starboard"]),
@@ -3631,6 +4095,35 @@ COMMAND_INFO.update({
     "uptimeinfo": ("Show uptime and latency.", "uptimeinfo", "uptimeinfo", []),
     "permissionscheck": ("Show major permissions for a member.", "permissionscheck [member]", "permissionscheck @user", []),
     "timestamp": ("Convert a Unix timestamp into Discord timestamp formats.", "timestamp [unix]", "timestamp 1760000000", []),
+    "bots": ("Count bot accounts in the server.", "bots", "bots", []),
+    "humans": ("Count human accounts in the server.", "humans", "humans", []),
+    "userroles": ("List every role held by a member.", "userroles [member]", "userroles @user", ["memberroles"]),
+    "rolemembers": ("List members who have a role.", "rolemembers <role>", "rolemembers @Staff", []),
+    "channelcount": ("Show server channel totals.", "channelcount", "channelcount", []),
+    "categorycount": ("Count server categories.", "categorycount", "categorycount", []),
+    "textchannels": ("List text channels.", "textchannels", "textchannels", []),
+    "voicechannels": ("List voice channels.", "voicechannels", "voicechannels", []),
+    "servercreated": ("Show when the server was created.", "servercreated", "servercreated", []),
+    "memberjoined": ("Show when a member joined.", "memberjoined [member]", "memberjoined @user", []),
+    "accountage": ("Show a Discord account's age.", "accountage [member]", "accountage @user", []),
+    "serverbanner": ("Show the server banner.", "serverbanner", "serverbanner", []),
+    "emojiinfo": ("Show custom emoji information.", "emojiinfo <emoji>", "emojiinfo :wave:", []),
+    "stickerinfo": ("Show server sticker information.", "stickerinfo <sticker>", "stickerinfo sticker", []),
+    "snowflake": ("Convert a Discord snowflake to a date.", "snowflake <id>", "snowflake 123456789", []),
+    "hex": ("Inspect a hexadecimal color.", "hex <hex>", "hex #5865F2", []),
+    "randomchoice": ("Choose one item from a list.", "randomchoice <a | b | ...>", "randomchoice red | blue", []),
+    "randommember": ("Pick a random member.", "randommember [role]", "randommember @Players", []),
+    "rolepermissions": ("Show permissions enabled on a role.", "rolepermissions <role>", "rolepermissions @Staff", []),
+    "channelpermissions": ("Show a member's permissions in a channel.", "channelpermissions [channel] [member]", "channelpermissions #general @user", []),
+    "afklist": ("List members currently marked AFK.", "afklist", "afklist", []),
+    "pollresults": ("Read reaction counts from a message.", "pollresults <message_id>", "pollresults 123456789", []),
+    "purgebots": ("Delete recent bot messages.", "purgebots [amount]", "purgebots 50", []),
+    "purgeuser": ("Delete recent messages from one member.", "purgeuser <member> [amount]", "purgeuser @user 25", []),
+    "calc": ("Safely evaluate basic arithmetic.", "calc <expression>", "calc (12 + 8) * 3", []),
+    "unix": ("Convert a Unix timestamp to Discord formats.", "unix [timestamp]", "unix 1760000000", []),
+    "channelage": ("Show when a channel was created.", "channelage [channel]", "channelage #general", []),
+    "roleage": ("Show when a role was created.", "roleage <role>", "roleage @Members", []),
+    "serverowner": ("Show the server owner.", "serverowner", "serverowner", []),
 })
 
 
