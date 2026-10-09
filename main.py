@@ -554,13 +554,10 @@ COMMAND_INFO = {
     "rate": ("Give something a random rating.", "rate <thing>", "rate my setup", []),
     "compliment": ("Give a friendly compliment.", "compliment [member]", "compliment @user", []),
     "wyr": ("Ask a would-you-rather question.", "wyr <question>", "wyr cats or dogs?", []),
-    "mock": ("Convert text into alternating-case mock text.", "mock <text>", "mock skill issue", []),
     "reverse": ("Reverse text.", "reverse <text>", "reverse hello", []),
     "hug": ("Give someone a virtual hug.", "hug [member]", "hug @user", []),
     "pat": ("Give someone a virtual pat.", "pat [member]", "pat @user", []),
     "love": ("Send some virtual love.", "love [member]", "love @user", []),
-    "simp": ("Generate a silly simp percentage.", "simp [member]", "simp @user", []),
-    "gayrate": ("Generate a silly percentage.", "gayrate [member]", "gayrate @user", []),
     "howlucky": ("Generate today's silly luck percentage.", "howlucky", "howlucky", []),
     "ship": ("Generate a silly compatibility percentage.", "ship <member> <member>", "ship @a @b", []),
     "shipname": ("Create a combined ship name.", "shipname <member> <member>", "shipname @a @b", []),
@@ -575,7 +572,7 @@ COMMAND_INFO = {
     "giveaway": ("Start a button-based giveaway.", "giveaway <duration> <winners> <prize>", "giveaway 1h 1 Nitro", []),
     "gaw": ("Start a giveaway.", "gaw <duration> <winners> <prize>", "gaw 30m 2 Gift Card", []),
     "announce": ("Send a server announcement embed.", "announce <message>", "announce server event tonight!", []),
-    "slowmode": ("Set the current channel slowmode.", "slowmode <seconds>", "slowmode 5", []),
+    "slowmode": ("Set or inspect channel slowmode with readable durations.", "slowmode set <duration> [channel]", "slowmode set 1m", []),
     "nick": ("Change a member's nickname.", "nick <member> [nickname]", "nick @user New Name", []),
     "role": ("Give a role to a member.", "role <member> <role>", "role @user @VIP", ["r"]),
     "removerole": ("Remove a role from a member.", "removerole <member> <role>", "removerole @user @VIP", []),
@@ -626,10 +623,8 @@ COMMAND_INFO.update({
     "settopic": ("Set or view the current channel topic.", "settopic [topic]", "settopic weekly discussion", ["topicset"]),
     "clone": ("Clone the current or selected channel.", "clone [channel] [name]", "clone #general general-copy", []),
     "massrole": ("Add or remove a role from non-bot members.", "massrole <add|remove> @role", "massrole add @Member", ["rmrole"]),
-    "timer": ("Set a reminder and receive it by DM.", "timer <duration> [message]", "timer 30m check the event", ["remindme"]),
     "embed": ("Send a clean bleeed-styled embed from text.", "embed <text>", "embed server rules are here", ["sayembed"]),
     "cleanbots": ("Remove recent bot messages from the current channel.", "cleanbots [amount]", "cleanbots 50", ["purgebots"]),
-    "invitecheck": ("List server invites and their usage.", "invitecheck", "invitecheck", ["invites"]),
 })
 
 
@@ -666,15 +661,15 @@ CATEGORIES = [
     ("Roles", ["role", "removerole", "deleterole", "changerole", "create", "create role", "create channel", "create vc", "br"]),
     ("Security", ["antinuke", "antiraid", "filter", "security"]),
     ("Moderation", ["ban", "unban", "kick", "mute", "unmute", "warn", "warnings", "unwarn", "clearwarnings", "purge", "lock", "unlock", "snipe", "slowmode", "nick", "topic", "say"]),
-    ("Fun", ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "wyr", "mock", "reverse", "truth", "dare", "wouldyou"]),
-    ("Social", ["hug", "pat", "love", "simp", "gayrate", "howlucky", "ship", "shipname", "compliment"]),
+    ("Fun", ["8ball", "coinflip", "roll", "choose", "rps", "joke", "fact", "rate", "wyr", "reverse", "truth", "dare", "wouldyou"]),
+    ("Social", ["hug", "pat", "love", "howlucky", "ship", "shipname", "compliment"]),
     ("Utility", ["afk", "randomnumber"]),
 ]
 
 # V53 command-browser categories.
 CATEGORIES.extend([
     ("Management", ["settings", "joinlog", "leavelog", "auditlog", "logconfig", "goodbye", "gallery", "protection", "alias", "commandtoggle", "count", "rolelist", "channelstatsall", "memberstats", "usersearch", "settopic", "clone", "massrole"]),
-    ("Utility Plus", ["timer", "embed", "cleanbots", "invitecheck"]),
+    ("Utility Plus", ["embed", "cleanbots"]),
 ])
 
 
@@ -689,7 +684,7 @@ def build_pages():
         ["Information"],
         ["Server", "Management"],
         ["Roles", "Role Management", "Role Subcommands", "Security"],
-        ["Moderation", "Moderation Tools", "Additional Moderation", "Moderation Subcommands", "Purge Subcommands", "Nuke Subcommands", "Threads", "Channel Management", "Server Tools", "Case and Note Tools", "Remaining Supplied Commands", "More Purge Commands", "More Server Commands"],
+        ["Moderation", "Moderation Tools", "Additional Moderation", "Moderation Subcommands", "Purge Subcommands", "Threads", "Channel Management", "Server Tools", "Case and Note Tools", "Remaining Supplied Commands", "More Purge Commands", "More Server Commands"],
         ["Fun", "Social", "Utility", "Utility Plus"],
         ["Owner"],
     ]
@@ -2304,11 +2299,6 @@ async def wyr(ctx, *, question):
     await ctx.send(embed=result_embed("Would You Rather", "Question", question))
 
 @bot.command()
-async def mock(ctx, *, text):
-    mocked = "".join(c.upper() if i % 2 else c.lower() for i, c in enumerate(text))
-    await ctx.send(embed=result_embed("Mock", "Result", mocked))
-
-@bot.command()
 async def reverse(ctx, *, text):
     await ctx.send(embed=result_embed("Reverse", "Result", text[::-1]))
 
@@ -2326,16 +2316,6 @@ async def pat(ctx, member: discord.Member=None):
 async def love(ctx, member: discord.Member=None):
     member = member or ctx.author
     await ctx.send(embed=result_embed("Love", "Action", f"{ctx.author.mention} sent some love to {member.mention} ♡"))
-
-@bot.command()
-async def simp(ctx, member: discord.Member=None):
-    member = member or ctx.author
-    await ctx.send(embed=result_embed("Simp Rate", "User", member.mention, extra=[("Score", f"**{random.randint(0,100)}%**")]))
-
-@bot.command()
-async def gayrate(ctx, member: discord.Member=None):
-    member = member or ctx.author
-    await ctx.send(embed=result_embed("Rate", "User", member.mention, extra=[("Score", f"**{random.randint(0,100)}%**")]))
 
 @bot.command()
 async def howlucky(ctx):
@@ -2514,12 +2494,12 @@ async def announce(ctx, *, message):
 @bot.group(name="slowmode", invoke_without_command=True)
 @commands.has_permissions(manage_channels=True)
 async def slowmode(ctx, seconds: int = None):
-    """Set channel slowmode."""
+    """Set channel slowmode; prefer `slowmode set 1s` for readable durations."""
     if seconds is None:
-        return await ctx.send(embed=make_embed("slowmode", f"usage: `{PREFIX}slowmode <seconds>` or `{PREFIX}slowmode on/off [channel]`."))
+        return await ctx.send(embed=make_embed("slowmode", f"usage: `{PREFIX}slowmode set <duration>` (e.g. `1s`, `2s`, `1m`) or `{PREFIX}slowmode off`."))
     if not 0 <= seconds <= 21600:
         return await ctx.send(embed=make_embed("slowmode", "use a value from 0 to 21600 seconds."))
-    await ctx.channel.edit(slowmode_delay=seconds)
+    await ctx.channel.edit(slowmode_delay=seconds, reason=f"Slowmode set by {ctx.author}")
     await ctx.send(embed=make_embed("slowmode", f"slowmode set to **{seconds}s**."))
 
 
@@ -3720,17 +3700,6 @@ async def massrole(ctx, action="add", role: discord.Role = None):
     await ctx.send(embed=make_embed("mass role", f"changed `{changed}` members."))
 
 
-@bot.command(aliases=["remindme"])
-async def timer(ctx, duration: str, *, text="timer finished"):
-    seconds = parse_duration(duration)
-    if not seconds or seconds < 1 or seconds > 604800:
-        return await ctx.send(embed=make_embed("timer", "duration must be between 1 second and 7 days."))
-    await ctx.send(embed=make_embed("timer set", f"I'll remind you <t:{int(time.time()+seconds)}:R>."))
-    await asyncio.sleep(seconds)
-    try: await ctx.author.send(embed=make_embed("timer", text[:1800]))
-    except discord.HTTPException: pass
-
-
 @bot.command(aliases=["sayembed"])
 async def embed(ctx, *, text):
     if not v53_can_manage(ctx): return
@@ -3746,18 +3715,6 @@ async def cleanbots(ctx, amount: int = 100):
     amount = max(1, min(amount, 100))
     deleted = await ctx.channel.purge(limit=amount + 1, check=lambda m: m.author.bot)
     await ctx.send(embed=make_embed("bot cleanup", f"deleted `{max(0, len(deleted)-1)}` bot messages."), delete_after=4)
-
-
-@bot.command()
-async def invitecheck(ctx):
-    if not ctx.author.guild_permissions.manage_guild: return
-    try:
-        invites = await ctx.guild.invites()
-    except discord.HTTPException:
-        return await ctx.send(embed=make_embed("invites", "I need Manage Server to inspect invites."))
-    invites.sort(key=lambda x: x.uses or 0, reverse=True)
-    lines = [f"`{i.uses or 0}` uses · `{i.code}` · {i.inviter.mention if i.inviter else 'unknown'}" for i in invites[:20]]
-    await ctx.send(embed=make_embed("server invites", "\n".join(lines) or "no invites found."))
 
 
 @bot.command(aliases=["modconfig"])
@@ -5357,13 +5314,82 @@ async def restrictcommand_list(ctx):
 async def restrictcommand_reset(ctx):
     d=_load_json_config("restricted_commands.json",{}); d[str(ctx.guild.id)]={}; _save_json_file("restricted_commands.json",d); await ctx.send(embed=make_embed("restricted commands", "cleared all command restrictions."))
 
-@bot.group(name="nuke", invoke_without_command=True)
+class NukeConfirmView(discord.ui.View):
+    def __init__(self, owner_id: int, channel_id: int):
+        super().__init__(timeout=30)
+        self.owner_id = owner_id
+        self.channel_id = channel_id
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("only the administrator who started this nuke can use these buttons.", ephemeral=True)
+            return False
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("administrator permission is required.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except (discord.HTTPException, discord.NotFound):
+                pass
+
+    @discord.ui.button(label="Yes, nuke channel", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = bot.get_channel(self.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.edit_message(content="the original text channel is no longer available.", embed=None, view=None)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            clone = await channel.clone(reason=f"channel nuked by {interaction.user} ({interaction.user.id})")
+            await clone.edit(position=channel.position)
+            await channel.delete(reason=f"channel nuked by {interaction.user} ({interaction.user.id})")
+            await clone.send(embed=make_embed("channel recreated", f"channel recreated by {interaction.user.mention}."))
+            await interaction.followup.send(f"channel recreated: {clone.mention}", ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            await interaction.followup.send(f"couldn't complete the nuke: `{exc}`. check the bot's Manage Channels permission and role access.", ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="nuke cancelled.", embed=None, view=None)
+        self.stop()
+
+@bot.command(name="nuke")
 @commands.has_permissions(administrator=True)
 async def nuke(ctx):
-    clone = await ctx.channel.clone(reason=f"channel cloned by {ctx.author}")
-    await clone.edit(position=ctx.channel.position)
-    await ctx.channel.delete(reason=f"channel nuked by {ctx.author}")
-    await clone.send(embed=make_embed("channel nuked", f"channel recreated by {ctx.author.mention}."))
+    """Ask for confirmation before recreating the current text channel."""
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return await ctx.send(embed=make_embed("nuke", "use this command in a regular text channel, not a thread or voice channel."))
+    view = NukeConfirmView(ctx.author.id, ctx.channel.id)
+    view.message = await ctx.send(
+        embed=make_embed("confirm channel nuke", f"are you sure you want to delete and recreate {ctx.channel.mention}?\n\nthis removes the channel's message history. this prompt expires in 30 seconds."),
+        view=view,
+    )
+
+@slowmode.command(name="set")
+@commands.has_permissions(manage_channels=True)
+async def slowmode_set(ctx, delay: str, channel: discord.TextChannel = None):
+    """Set slowmode using values such as 1s, 2s, or 1m."""
+    channel = channel or ctx.channel
+    seconds = parse_duration(delay)
+    if seconds is None or not 1 <= seconds <= 21600:
+        return await ctx.send(embed=make_embed("slowmode", "delay must be from `1s` to `6h` (examples: `1s`, `2s`, `1m`). Use `slowmode off` to disable it."))
+    try:
+        await channel.edit(slowmode_delay=seconds, reason=f"Slowmode set by {ctx.author}")
+    except discord.Forbidden:
+        return await ctx.send(embed=make_embed("slowmode", "I don't have permission to change that channel."))
+    await ctx.send(embed=make_embed("slowmode updated", f"**Channel:** {channel.mention}\n**Delay:** `{seconds}s`"))
+
+@slowmode.command(name="status")
+@commands.has_permissions(manage_channels=True)
+async def slowmode_status(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    await ctx.send(embed=make_embed("slowmode status", f"**Channel:** {channel.mention}\n**Delay:** `{channel.slowmode_delay}s`"))
 
 @slowmode.command(name="on")
 @commands.has_permissions(manage_channels=True)
@@ -5436,15 +5462,6 @@ async def revokefiles(ctx, setting: str = None, channel: discord.TextChannel = N
     channel=channel or ctx.channel; ow=channel.overwrites_for(ctx.guild.default_role); value=False if setting == "on" else None
     ow.attach_files=value; ow.embed_links=value; await channel.set_permissions(ctx.guild.default_role, overwrite=ow, reason=f"revokefiles {setting} by {ctx.author}")
     await ctx.send(embed=make_embed("revokefiles", f"updated file/embed permissions in {channel.mention}."))
-
-@bot.command(name="naughty")
-@commands.has_permissions(manage_channels=True)
-async def naughty(ctx, channel: discord.TextChannel = None):
-    channel=channel or ctx.channel
-    if not hasattr(channel, "nsfw"): return await ctx.send(embed=make_embed("naughty", "that channel does not support NSFW settings."))
-    await channel.edit(nsfw=True); await ctx.send(embed=make_embed("naughty", f"marked {channel.mention} as NSFW for 30 seconds.")); await asyncio.sleep(30)
-    try: await channel.edit(nsfw=False)
-    except (discord.Forbidden, discord.HTTPException): pass
 
 @bot.command(name="setupmute")
 @commands.has_guild_permissions(manage_guild=True, manage_channels=True)
@@ -5900,39 +5917,6 @@ async def role_cancel(ctx):
     task["cancel"]=True; data[str(ctx.guild.id)]=task; _save_json_file("role_mass_tasks.json",data)
     await ctx.send(embed=make_embed("role task", "cancellation requested for the saved mass-role task."))
 
-@nuke.command(name="list")
-@commands.has_permissions(administrator=True)
-async def nuke_list(ctx):
-    d=_load_json_config("scheduled_nukes.json",{}).get(str(ctx.guild.id),{}); body="\n".join(f"<#{cid}> · every `{v.get('interval','?')}` · {v.get('message','')}" for cid,v in d.items()) or "No scheduled nukes configured."
-    await ctx.send(embed=make_embed("scheduled nukes", body[:4000]))
-
-@nuke.command(name="view")
-@commands.has_permissions(administrator=True)
-async def nuke_view(ctx, channel: discord.TextChannel):
-    d=_load_json_config("scheduled_nukes.json",{}).get(str(ctx.guild.id),{}).get(str(channel.id))
-    await ctx.send(embed=make_embed("scheduled nuke", f"**Channel:** {channel.mention}\n**Settings:** `{d}`" if d else f"No scheduled nuke for {channel.mention}."))
-
-@nuke.command(name="remove")
-@commands.has_permissions(administrator=True)
-async def nuke_remove(ctx, channel: discord.TextChannel):
-    data=_load_json_config("scheduled_nukes.json",{}); g=data.setdefault(str(ctx.guild.id),{}); removed=g.pop(str(channel.id),None); _save_json_file("scheduled_nukes.json",data)
-    await ctx.send(embed=make_embed("scheduled nuke", f"removed schedule for {channel.mention}." if removed else "no schedule was found for that channel."))
-
-@nuke.command(name="archive")
-@commands.has_permissions(administrator=True)
-async def nuke_archive(ctx, channel: discord.TextChannel, setting: str):
-    if setting.lower() not in ("on","off","true","false"): return await ctx.send(embed=make_embed("nuke archive", "setting must be `on` or `off`."))
-    data=_load_json_config("scheduled_nukes.json",{}); g=data.setdefault(str(ctx.guild.id),{}); cfg=g.setdefault(str(channel.id),{"interval":"unset","message":"scheduled channel refresh"}); cfg["archive_pins"]=setting.lower() in ("on","true"); _save_json_file("scheduled_nukes.json",data)
-    await ctx.send(embed=make_embed("nuke archive", f"pin archiving {'enabled' if cfg['archive_pins'] else 'disabled'} for {channel.mention}."))
-
-@nuke.command(name="add")
-@commands.has_permissions(administrator=True)
-async def nuke_add(ctx, channel: discord.TextChannel, interval: str, *, message: str = "scheduled channel refresh"):
-    seconds=parse_duration(interval)
-    if seconds is None or seconds < 3600: return await ctx.send(embed=make_embed("nuke schedule", "use an interval of at least `1h`, e.g. `nuke add #general 1d refresh`."))
-    data=_load_json_config("scheduled_nukes.json",{}); g=data.setdefault(str(ctx.guild.id),{}); g[str(channel.id)]={"interval":interval,"seconds":seconds,"message":message[:300],"archive_pins":False,"created_by":ctx.author.id,"next_run":int(time.time()+seconds)}; _save_json_file("scheduled_nukes.json",data)
-    await ctx.send(embed=make_embed("nuke schedule saved", f"saved a schedule for {channel.mention} every `{interval}`. the bot will attempt the channel refresh while online."))
-
 # Apply sticky roles and saved forced nicknames on joins, and keep role backups.
 _reminder_worker_started = False
 
@@ -5960,49 +5944,6 @@ async def start_reminder_worker():
                     changed=True
                 data[uid]=remaining
             if changed: _save_json_file("reminders.json",data)
-    asyncio.create_task(worker())
-
-_scheduled_nuke_worker_started = False
-
-@bot.listen("on_ready")
-async def start_scheduled_nuke_worker():
-    global _scheduled_nuke_worker_started
-    if _scheduled_nuke_worker_started: return
-    _scheduled_nuke_worker_started = True
-    async def worker():
-        while not bot.is_closed():
-            await asyncio.sleep(30)
-            data=_load_json_config("scheduled_nukes.json",{}); changed=False
-            for gid, channels in list(data.items()):
-                guild=bot.get_guild(int(gid))
-                if guild is None: continue
-                for cid, cfg in list(channels.items()):
-                    try: due=int(cfg.get("next_run",0)); interval=int(cfg.get("seconds",0))
-                    except (TypeError,ValueError): continue
-                    if interval < 3600 or due > int(time.time()): continue
-                    channel=guild.get_channel(int(cid))
-                    if channel is None:
-                        channels.pop(cid,None); changed=True; continue
-                    try:
-                        archive=None
-                        if cfg.get("archive_pins") and isinstance(channel, discord.TextChannel):
-                            pins=await channel.pins()
-                            if pins:
-                                lines=[f"{m.created_at.isoformat()} | {m.author} ({m.author.id}): {m.content}" for m in pins]
-                                archive=discord.File(io.BytesIO("\n\n".join(lines).encode("utf-8")), filename=f"pins-{channel.id}.txt")
-                        clone=await channel.clone(reason="scheduled channel refresh")
-                        await clone.edit(position=channel.position)
-                        if archive:
-                            try: await clone.send(content="Pinned-message archive before scheduled refresh:", file=archive)
-                            except discord.HTTPException: pass
-                        try: await clone.send(embed=make_embed("scheduled refresh", str(cfg.get("message","scheduled channel refresh"))))
-                        except discord.HTTPException: pass
-                        await channel.delete(reason="scheduled channel refresh")
-                        # A cloned channel gets a new ID, so move its schedule to that ID.
-                        channels.pop(cid,None); cfg["next_run"]=int(time.time())+interval; channels[str(clone.id)]=cfg; changed=True
-                    except (discord.Forbidden, discord.HTTPException):
-                        cfg["next_run"]=int(time.time())+min(interval,3600); changed=True
-            if changed: _save_json_file("scheduled_nukes.json",data)
     asyncio.create_task(worker())
 
 @bot.listen("on_member_remove")
@@ -6034,7 +5975,7 @@ async def enforce_saved_nickname(before, after):
 CATEGORIES.extend([
     ("Moderation Tools", ["tempban", "softban", "timeoutlist", "untimeout", "imute", "iunmute", "rmute", "runmute", "modstats", "moderationhistory", "jaillist", "caselog", "proof", "history", "unbanall", "raid"]),
     ("Role Management", ["temprole", "stickyrole", "role add", "role remove", "role delete", "role edit", "role icon", "role color", "role humans", "role bots", "role has", "role restore", "role topcolor", "role mentionable", "role hoist", "role create", "rolehumansremove", "rolebotsremove", "dump"]),
-    ("Channel Management", ["lockdown all", "lockdown role", "lockdown ignore", "unlock all", "unlockall", "purge links", "purge webhooks", "purge humans", "purge bots", "purge embeds", "purge files", "purge images", "purge stickers", "purge reactions", "purge mentions", "purge contains", "purge startswith", "purge endswith", "purge emoji", "purge emotes", "purge activity", "purge before", "purge after", "purge upto", "purge between", "slowmode on", "slowmode off", "revokefiles", "topic", "talk", "naughty"]),
+    ("Channel Management", ["lockdown all", "lockdown role", "lockdown ignore", "unlock all", "unlockall", "purge links", "purge webhooks", "purge humans", "purge bots", "purge embeds", "purge files", "purge images", "purge stickers", "purge reactions", "purge mentions", "purge contains", "purge startswith", "purge endswith", "purge emoji", "purge emotes", "purge activity", "purge before", "purge after", "purge upto", "purge between", "slowmode on", "slowmode off", "revokefiles", "topic", "talk"]),
     ("Utilities", ["reminders", "restrictcommand", "forcenickname", "setupmute", "permissions", "rename"]),
 ])
 COMMAND_INFO.update({
@@ -6064,7 +6005,6 @@ COMMAND_INFO.update({
     "topic": ("Set the current channel topic.", "topic <text>", "topic welcome to the server", []),
     "talk": ("Allow a role to talk in a channel.", "talk <channel> <role>", "talk #general @Members", []),
     "revokefiles": ("Toggle attachment/embed permissions in a channel.", "revokefiles <on|off> [channel]", "revokefiles on #general", []),
-    "naughty": ("Temporarily mark a channel as NSFW for 30 seconds.", "naughty [channel]", "naughty #general", []),
     "roleicon": ("Set a role icon from an image URL.", "roleicon <role> <url>", "roleicon @VIP https://example.com/icon.png", []),
     "rolementionable": ("Toggle whether a role can be mentioned.", "rolementionable <role>", "rolementionable @Members", []),
     "rolehoist": ("Toggle whether a role is shown separately in the member list.", "rolehoist <role>", "rolehoist @Staff", []),
@@ -6095,18 +6035,12 @@ CATEGORIES.extend([
     ("Moderation Subcommands", ["remind list", "remind remove", "thread watch list", "lockdown all", "lockdown role", "lockdown ignore", "lockdown ignore add", "lockdown ignore remove", "lockdown ignore list", "history view", "history remove", "history removeall", "proof set", "proof add", "proof list", "proof view", "proof remove", "ban recent", "ban purge", "unbanall cancel", "hardban list", "timeout list", "temprole list"]),
     ("Role Subcommands", ["role add", "role remove", "role delete", "role icon", "role humans", "role humans remove", "role mentionable", "role cancel", "role edit", "role topcolor", "role restore", "role hoist", "role bots", "role bots remove", "role color", "role color gradient", "role create", "role has", "role has remove"]),
     ("Purge Subcommands", ["purge after", "purge webhooks", "purge between", "purge links", "purge humans", "purge endswith", "purge reactions", "purge stickers", "purge mentions", "purge activity", "purge emoji", "purge startswith", "purge emotes", "purge upto", "purge embeds", "purge files", "purge images", "purge contains", "purge before", "purge bots"]),
-    ("Nuke Subcommands", ["nuke add", "nuke remove", "nuke list", "nuke archive", "nuke view"]),
 ])
 COMMAND_INFO.update({
     "ban recent": ("Ban a limited number of members who joined within the last seven days.", "ban recent [count] [reason]", "ban recent 5 suspected raid", []),
     "ban purge": ("Set how much message history normal bans delete.", "ban purge [seconds]", "ban purge 86400", []),
     "role color gradient": ("Save two requested gradient colors; Discord.py applies a solid-color fallback because native gradient roles are not exposed here.", "role color gradient <hex1> <hex2> <role>", "role color gradient #ff99cc #cc99ff @VIP", []),
     "role has remove": ("Remove a role from members who have another specified role.", "role has remove <source role> <role to remove>", "role has remove @VIP @Member", []),
-    "nuke add": ("Save a scheduled channel refresh configuration.", "nuke add <channel> <interval> [message]", "nuke add #general 1d daily refresh", []),
-    "nuke remove": ("Remove a saved scheduled channel refresh configuration.", "nuke remove <channel>", "nuke remove #general", []),
-    "nuke list": ("List saved scheduled channel refresh configurations.", "nuke list", "nuke list", []),
-    "nuke archive": ("Set whether pin archiving is enabled for a scheduled refresh.", "nuke archive <channel> <on|off>", "nuke archive #general on", []),
-    "nuke view": ("View a channel's saved scheduled refresh configuration.", "nuke view <channel>", "nuke view #general", []),
     "role cancel": ("Request cancellation of a saved mass-role task.", "role cancel", "role cancel", []),
     "thread watch list": ("List threads in the watch list.", "thread watch list", "thread watch list", []),
     "lockdown ignore add": ("Add a channel to the lockdown ignore list.", "lockdown ignore add <channel>", "lockdown ignore add #staff", []),
@@ -6139,7 +6073,7 @@ for _category_name, _category_commands in CATEGORIES:
 CATEGORIES.extend([
     ("Remaining Supplied Commands", ["modstats", "moderationhistory", "history", "history view", "history removeall", "history remove", "jaillist", "proof", "caselog", "reason", "timeout list", "untimeout", "mute", "unmute", "imute", "iunmute", "rmute", "runmute", "notes", "notes add", "notes clear", "notes remove", "hardban", "hardban list", "clearinvites", "drag", "unbanall", "unbanall cancel", "softban", "ban purge", "ban recent", "unjail", "temprole", "temprole list", "role", "role delete", "role icon", "role remove", "role humans", "role humans remove", "role add", "role mentionable", "role cancel", "role edit", "role topcolor", "role restore", "role hoist", "role bots", "role bots remove", "role color", "role color gradient", "role create", "role has", "role has remove"]),
     ("More Purge Commands", ["purge", "purge after", "purge webhooks", "purge between", "purge links", "purge humans", "purge endswith", "purge reactions", "purge stickers", "purge mentions", "purge activity", "purge emoji", "purge startswith", "purge emotes", "purge upto", "purge embeds", "purge files", "purge images", "purge contains", "purge before", "purge bots", "dump"]),
-    ("More Server Commands", ["nuke", "nuke remove", "nuke list", "nuke archive", "nuke add", "nuke view", "newmembers", "recentban", "talk", "unhide", "hide", "slowmode", "slowmode on", "slowmode off", "revokefiles", "revokefiles on", "revokefiles off", "setup", "rename", "restrictcommand", "restrictcommand reset", "restrictcommand list", "restrictcommand remove", "restrictcommand add", "stickyrole", "stickyrole remove", "stickyrole add", "stickyrole list", "raid", "forcenickname", "forcenickname list", "topic", "naughty", "setupmute", "permissions"]),
+    ("More Server Commands", ["nuke", "newmembers", "recentban", "talk", "unhide", "hide", "slowmode", "slowmode on", "slowmode off", "revokefiles", "revokefiles on", "revokefiles off", "setup", "rename", "restrictcommand", "restrictcommand reset", "restrictcommand list", "restrictcommand remove", "restrictcommand add", "stickyrole", "stickyrole remove", "stickyrole add", "stickyrole list", "raid", "forcenickname", "forcenickname list", "topic", "setupmute", "permissions"]),
 ])
 for _category_name, _category_commands in CATEGORIES:
     for _command_name in _category_commands:
@@ -6166,5 +6100,12 @@ for _category_name, _category_commands in CATEGORIES:
         if _command_name not in COMMAND_INFO:
             _pretty = _command_name.replace("_", " ").strip()
             COMMAND_INFO[_command_name] = (f"Manage {_pretty}.", f"{_command_name} [arguments]", _command_name, [])
+
+COMMAND_INFO.update({
+    "slowmode": ("Set or inspect channel slowmode with readable durations.", "slowmode set <duration> [channel]", "slowmode set 1m", []),
+    "slowmode set": ("Set slowmode with a duration such as 1s, 2s, or 1m.", "slowmode set <duration> [channel]", "slowmode set 2s", []),
+    "slowmode status": ("Show the current slowmode delay for a channel.", "slowmode status [channel]", "slowmode status", []),
+    "nuke": ("Recreate the current text channel after a confirmation prompt. Administrators only.", "nuke", "nuke", []),
+})
 
 bot.run(TOKEN)
