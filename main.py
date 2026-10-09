@@ -320,6 +320,28 @@ def save_br_config():
     _save_json_file(BR_CONFIG_FILE, {str(gid): {str(uid): rid for uid, rid in users.items()} for gid, users in br_config.items()})
 
 
+async def delete_member_br_role(guild, member_id, reason="BR access removed"):
+    """Delete a member's tracked Booster Role and clear its saved settings."""
+    member_id = int(member_id)
+    role_id = br_config.get(guild.id, {}).get(member_id)
+    role = guild.get_role(int(role_id)) if role_id else None
+    if role:
+        me = guild.me
+        if not me or role >= me.top_role:
+            print(f"BR cleanup skipped in guild {guild.id}: role {role.id} is not below the bot's top role")
+            return False
+        try:
+            await role.delete(reason=reason)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"BR cleanup failed in guild {guild.id} for member {member_id}: {exc}")
+            return False
+    br_config.setdefault(guild.id, {}).pop(member_id, None)
+    br_color_pairs.get(str(guild.id), {}).pop(str(member_id), None)
+    save_br_config()
+    save_br_color_pairs()
+    return True
+
+
 def load_br_overrides():
     global br_overrides
     data = _load_json_config(BR_OVERRIDE_FILE, {})
@@ -946,6 +968,10 @@ async def on_member_join(member):
 
 @bot.event
 async def on_member_update(before, after):
+    # Remove the member's personal BR role as soon as they stop boosting.
+    if before.premium_since is not None and after.premium_since is None:
+        await delete_member_br_role(after.guild, after.id, reason=f"BR role deleted because {after} stopped boosting")
+
     if before.premium_since is None and after.premium_since is not None:
         role_id = boost_roles.get(after.guild.id)
         if role_id:
@@ -1980,7 +2006,16 @@ async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("ban failed", "Discord returned an error while banning that member."))
     record_modlog(ctx.guild, member, "Ban", ctx.author, reason, details=f"Message deletion window: {delete_seconds} seconds")
-    await ctx.send(embed=result_embed("Member Banned", "User", fmt_user(member), extra=[("Reason", reason), ("Messages", f"deleted from the last {delete_seconds} seconds"), ("Moderator", ctx.author.mention)]))
+    dm_sent = True
+    try:
+        dm_embed = make_embed(
+            "you have been banned",
+            f"You have been banned from **{ctx.guild.name}**.\n\n**Reason**\n{reason}\n\n**Moderator**\n{ctx.author}\n\nMessages from the last `{delete_seconds}` seconds were requested for deletion.",
+        )
+        await member.send(embed=dm_embed)
+    except (discord.Forbidden, discord.HTTPException):
+        dm_sent = False
+    await ctx.send(embed=result_embed("Member Banned", "User", fmt_user(member), extra=[("Reason", reason), ("Messages", f"deleted from the last {delete_seconds} seconds"), ("DM", "sent" if dm_sent else "could not be delivered"), ("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["ub"])
 async def unban(ctx, user_id:int):
@@ -2696,7 +2731,9 @@ async def br(ctx, action=None, *, value=""):
                 return await ctx.send(embed=make_embed("Booster Role", f"{target.mention} doesn't have a BR override."))
             users.discard(target.id)
             save_br_overrides()
-            return await ctx.send(embed=make_embed("Booster Role", f"BR override removed from {target.mention}."))
+            deleted = await delete_member_br_role(ctx.guild, target.id, reason=f"BR override removed by {ctx.author}")
+            detail = "Their BR role was deleted." if deleted else "Their BR role could not be deleted automatically; check the bot's Manage Roles permission and role hierarchy."
+            return await ctx.send(embed=make_embed("Booster Role", f"BR override removed from {target.mention}. {detail}"))
         users.add(target.id)
         save_br_overrides()
         return await ctx.send(embed=make_embed("Booster Role", f"{target.mention} can now create a BR without boosting."))
