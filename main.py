@@ -5174,7 +5174,7 @@ async def proof_remove(ctx, case_id: str, index: int):
     if index < 1 or index > len(attachments): return await ctx.send(embed=make_embed("proof", "attachment index not found."))
     attachments.pop(index-1); save_modlogs(); await ctx.send(embed=make_embed("proof", f"removed attachment `{index}` from case `{case_id}`."))
 
-@history.command(name="view")
+@cases.command(name="view")
 @commands.has_permissions(manage_messages=True)
 async def history_view(ctx, case_id: str):
     found = _case_lookup(ctx, case_id)
@@ -5182,7 +5182,7 @@ async def history_view(ctx, case_id: str):
     uid, idx, entry = found
     await ctx.send(embed=make_embed(f"case {case_id}", f"**Member:** <@{uid}>\n**Action:** {entry.get('action','UNKNOWN')}\n**Reason:** {entry.get('reason','No reason provided')}\n**Moderator:** <@{entry.get('moderator_id',0)}>\n**Time:** <t:{int(entry.get('timestamp',time.time()))}:F>"))
 
-@history.command(name="remove")
+@cases.command(name="remove")
 @commands.has_permissions(manage_messages=True)
 async def history_remove(ctx, member: discord.Member, case_id: str):
     if not ctx.author.guild_permissions.administrator and not any(r.id in WARN_ROLES for r in ctx.author.roles): return
@@ -5194,7 +5194,7 @@ async def history_remove(ctx, member: discord.Member, case_id: str):
     if idx < 0 or idx >= len(entries): return await ctx.send(embed=make_embed("history", "case not found for that member."))
     entries.pop(idx); save_modlogs(); await ctx.send(embed=make_embed("history", f"removed case `{case_id}` for {member.mention}."))
 
-@history.command(name="removeall")
+@cases.command(name="removeall")
 @commands.has_permissions(administrator=True)
 async def history_removeall(ctx, member: discord.Member):
     modlog_data[ctx.guild.id].pop(member.id, None); save_modlogs()
