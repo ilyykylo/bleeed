@@ -123,6 +123,7 @@ def save_quarantine():
 def record_modlog(guild, member_or_id, action, moderator, reason="No reason provided", **extra):
     uid = member_or_id.id if hasattr(member_or_id, "id") else int(member_or_id)
     entry = {
+        "case_id": f"{int(time.time())}-{len(modlog_data[guild.id][uid]) + 1}",
         "action": action,
         "moderator_id": moderator.id if hasattr(moderator, "id") else int(moderator),
         "reason": reason or "No reason provided",
@@ -687,8 +688,8 @@ def build_pages():
     page_groups = [
         ["Information"],
         ["Server", "Management"],
-        ["Roles", "Security"],
-        ["Moderation", "Moderation Tools"],
+        ["Roles", "Role Management", "Role Subcommands", "Security"],
+        ["Moderation", "Moderation Tools", "Additional Moderation", "Moderation Subcommands", "Purge Subcommands", "Nuke Subcommands", "Threads", "Channel Management", "Server Tools", "Case and Note Tools", "Remaining Supplied Commands", "More Purge Commands", "More Server Commands"],
         ["Fun", "Social", "Utility", "Utility Plus"],
         ["Owner"],
     ]
@@ -814,9 +815,9 @@ class ServerListView(discord.ui.View):
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
 class CommandsView(discord.ui.View):
-    """Compact command directory with the same information hierarchy throughout bleeed."""
+    """Compact command directory with buttons that expire after one minute."""
     def __init__(self, pages, author_id):
-        super().__init__(timeout=180)
+        super().__init__(timeout=60)
         self.pages = pages
         self.index = 0
         self.author_id = author_id
@@ -856,6 +857,15 @@ class CommandsView(discord.ui.View):
             await interaction.response.send_message("this command menu belongs to the person who opened it.", ephemeral=True)
             return False
         return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except (discord.HTTPException, discord.NotFound):
+                pass
 
     @discord.ui.button(label="‹", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1191,37 +1201,137 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-@bot.command(aliases=["h"])
-async def help(ctx, command_name=None):
-    if command_name:
-        cmd = bot.get_command(command_name.lower())
-        if not cmd:
-            return await ctx.send(embed=make_embed("command not found", f"I couldn't find `,{command_name}`.\n\nuse `{PREFIX}commands` to browse every command."))
-        info = COMMAND_INFO.get(cmd.name, (cmd.help or "No description available.", cmd.qualified_name, cmd.qualified_name, cmd.aliases))
+class GroupHelpView(discord.ui.View):
+    """Bleed-style command group browser. Controls are removed after 60 seconds."""
+    def __init__(self, ctx, group, entries, display_name):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.group = group
+        self.entries = list(entries)
+        self.display_name = display_name
+        self.author_id = ctx.author.id
+        self.index = 0
+        self.sort_mode = 0
+        self.message = None
+        self.refresh_buttons()
+
+    def ordered_entries(self):
+        entries = list(self.entries)
+        if self.sort_mode == 1:
+            entries.sort(key=lambda c: c.name.lower())
+        elif self.sort_mode == 2:
+            entries.sort(key=lambda c: c.name.lower(), reverse=True)
+        return entries
+
+    def refresh_buttons(self):
+        total = max(1, len(self.ordered_entries()))
+        self.previous.disabled = self.index <= 0
+        self.next.disabled = self.index >= total - 1
+        self.page.label = f"{self.index + 1}/{total}"
+        self.sort.label = ("Sort: Default", "Sort: A–Z", "Sort: Z–A")[self.sort_mode]
+
+    def make_embed(self):
+        entries = self.ordered_entries()
+        total = len(entries)
+        if not entries:
+            return make_embed(f"Group Command: {self.display_name}", "No subcommands are available.")
+        cmd = entries[self.index]
+        info = COMMAND_INFO.get(cmd.qualified_name, COMMAND_INFO.get(cmd.name, (cmd.help or "No description available.", cmd.signature or "n/a", "n/a", cmd.aliases)))
         description, syntax, example, aliases = info
-        alias_text = ", ".join(f"`{a}`" for a in aliases) if aliases else "n/a"
-        parameters = syntax.split(" ", 1)[1] if " " in syntax else "n/a"
-        parameters = parameters.strip() or "n/a"
+        alias_text = ", ".join(aliases) if aliases else "n/a"
+        parameters = cmd.signature.strip() or "n/a"
+        permissions = "Manage Channels" if cmd.name in {"exclusive", "add", "remove", "clear"} and self.group.name in {"ar", "autoresponder"} else "n/a"
         if cmd.name in {"servers", "guilds", "maintenance", "status", "stream"}:
-            permission = "Server Owner"
+            permissions = "Server Owner"
+        module = getattr(cmd, "cog_name", None) or "servers"
+        e = discord.Embed(title=f"Group Command: {self.display_name} {cmd.name}", description=description, color=COLOR)
+        e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
+        e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
+        e.add_field(name="Information", value=f"⚠️ {permissions}", inline=True)
+        e.add_field(name="Usage", value=f"```text\nSyntax: {PREFIX}{self.display_name} {syntax}\nExample: {PREFIX}{self.display_name} {example}\n```", inline=False)
+        e.description = (e.description or "") + f"\n\n-# Page {self.index + 1}/{total} ({total} entries) ∙ Module: {module}"
+        return e
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("this help menu belongs to the person who opened it.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except (discord.HTTPException, discord.NotFound):
+                pass
+
+    @discord.ui.button(label="❮", style=discord.ButtonStyle.primary)
+    async def previous(self, interaction, button):
+        self.index = max(0, self.index - 1)
+        self.refresh_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @discord.ui.button(label="❯", style=discord.ButtonStyle.primary)
+    async def next(self, interaction, button):
+        self.index = min(len(self.ordered_entries()) - 1, self.index + 1)
+        self.refresh_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @discord.ui.button(label="1/1", style=discord.ButtonStyle.secondary, disabled=True)
+    async def page(self, interaction, button):
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Sort: Default", style=discord.ButtonStyle.secondary)
+    async def sort(self, interaction, button):
+        self.sort_mode = (self.sort_mode + 1) % 3
+        self.index = min(self.index, len(self.ordered_entries()) - 1)
+        self.refresh_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @discord.ui.button(label="✕", style=discord.ButtonStyle.danger)
+    async def close(self, interaction, button):
+        self.stop()
+        await interaction.response.edit_message(view=None)
+
+
+@bot.command(aliases=["h"])
+async def help(ctx, *, command_name=None):
+    if command_name:
+        cmd = bot.get_command(command_name.lower().strip())
+        if not cmd:
+            return await ctx.send(embed=make_embed("command not found", f"I couldn't find `{PREFIX}{command_name}`.\n\nuse `{PREFIX}commands` to browse every command."))
+        display_name = command_name.strip().split()[0]
+        if isinstance(cmd, commands.Group):
+            entries = list(cmd.commands)
+            if entries:
+                view = GroupHelpView(ctx, cmd, entries, display_name)
+                msg = await ctx.send(embed=view.make_embed(), view=view)
+                view.message = msg
+                return
+        info = COMMAND_INFO.get(cmd.qualified_name, COMMAND_INFO.get(cmd.name, (cmd.help or "No description available.", cmd.signature or cmd.qualified_name, "n/a", cmd.aliases)))
+        description, syntax, example, aliases = info
+        alias_text = ", ".join(aliases) if aliases else "n/a"
+        parameters = cmd.signature.strip() or "n/a"
+        if cmd.name in {"servers", "guilds", "maintenance", "status", "stream"}:
+            permission = "⚠️ Server Owner"
+        elif cmd.name in {"ar", "autoreact", "autorole"}:
+            permission = "⚠️ Manage Channels"
         elif getattr(cmd, "checks", None):
             permission = "Configured server permission"
         else:
             permission = "n/a"
-        desc = (
-            f"# Command: {cmd.qualified_name}\n"
-            f"{description}\n\n"
-            f"**Aliases**\n{alias_text}\n\n"
-            f"**Parameters**\n{parameters}\n\n"
-            f"**Information**\n{permission}\n\n"
-            f"**Usage**\n`Syntax: {PREFIX}{syntax}\nExample: {PREFIX}{example}`"
-            f"\n\n-# Module: {getattr(cmd, 'cog_name', None) or 'bleeed'}"
-        )
-        return await ctx.send(embed=make_embed(None, desc))
+        module = getattr(cmd, "cog_name", None) or "servers"
+        e = discord.Embed(title=f"Command: {cmd.qualified_name}", description=description, color=COLOR)
+        e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
+        e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
+        e.add_field(name="Information", value=permission, inline=True)
+        e.add_field(name="Usage", value=f"```text\nSyntax: {PREFIX}{syntax}\nExample: {PREFIX}{example}\n```", inline=False)
+        e.description = (e.description or "") + f"\n\n-# Page 1/1 (1 entry) ∙ Module: {module}"
+        return await ctx.send(embed=e)
     e = directory_embed("bleeed", "premium-style moderation, security, server management and utility tools", ctx=ctx)
     e.add_field(name="**Prefix**", value=f"`{PREFIX}`", inline=True)
     e.add_field(name="**Commands**", value=f"`{len(COMMAND_INFO)}`", inline=True)
-    e.add_field(name="**Help**", value=f"`{PREFIX}help <command>`", inline=True)
+    e.add_field(name="**Help**", value=f"`{PREFIX}help <command>**", inline=True)
     e.description += f"\n\nuse `{PREFIX}commands` to browse the command directory."
     await ctx.send(embed=e)
 
@@ -1546,8 +1656,8 @@ async def emojis(ctx): await ctx.send(embed=make_embed("emojis", " ".join(str(e)
 @bot.hybrid_command(name="stickers", description="List server stickers.")
 async def stickers(ctx): await ctx.send(embed=make_embed("stickers", " ".join(f"`{s.name}`" for s in ctx.guild.stickers) or "no stickers."))
 
-@bot.command()
-async def permissions(ctx, member: discord.Member=None):
+@bot.command(name="guildpermissions")
+async def guildpermissions(ctx, member: discord.Member=None):
     member=member or ctx.author; perms=[p.replace("_", " ") for p,v in member.guild_permissions if v]; await ctx.send(embed=make_embed("permissions", f"**{member.mention}**\n" + ", ".join(perms)))
 
 @bot.command()
@@ -1853,7 +1963,7 @@ async def unquarantine(ctx, member: discord.Member):
     record_modlog(ctx.guild, member, "Unquarantine", ctx.author, "Removed quarantine")
     await ctx.send(embed=result_embed("Member Unquarantined", "User", fmt_user(member), extra=[("Moderator", ctx.author.mention)]))
 
-@bot.command(aliases=["b"])
+@bot.group(name="ban", aliases=["b"], invoke_without_command=True)
 async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
     if not role_ok(ctx.author, {BAN_ROLE}):
         return await ctx.send(embed=make_embed("no permission", "you need the configured ban role or Administrator."))
@@ -1861,14 +1971,21 @@ async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
         return await ctx.send(embed=make_embed("bot permission missing", "I need **Ban Members** permission to do that."))
     if not target_ok(ctx, member):
         return await ctx.send(embed=make_embed("cannot ban member", "The target must be below my highest role and below your highest role."))
+    explicit = re.match(r"^(\d{1,6})(?:\s+(.*))?$", reason.strip())
+    if explicit:
+        delete_seconds = max(0, min(int(explicit.group(1)), 604800))
+        reason = explicit.group(2) or "no reason provided"
+    else:
+        delete_seconds = int(guild_cfg(ctx.guild.id).get("ban_delete_seconds", 604800))
+        delete_seconds = max(0, min(delete_seconds, 604800))
     try:
-        await member.ban(reason=reason, delete_message_seconds=604800)
+        await member.ban(reason=reason, delete_message_seconds=delete_seconds)
     except discord.Forbidden:
         return await ctx.send(embed=make_embed("ban failed", "Discord denied the ban. Check my **Ban Members** permission and role hierarchy."))
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("ban failed", "Discord returned an error while banning that member."))
-    record_modlog(ctx.guild, member, "Ban", ctx.author, reason, details="Messages deleted from the last 7 days")
-    await ctx.send(embed=result_embed("Member Banned", "User", fmt_user(member), extra=[("Reason", reason), ("Messages", "deleted from the last 7 days"), ("Moderator", ctx.author.mention)]))
+    record_modlog(ctx.guild, member, "Ban", ctx.author, reason, details=f"Message deletion window: {delete_seconds} seconds")
+    await ctx.send(embed=result_embed("Member Banned", "User", fmt_user(member), extra=[("Reason", reason), ("Messages", f"deleted from the last {delete_seconds} seconds"), ("Moderator", ctx.author.mention)]))
 
 @bot.command(aliases=["ub"])
 async def unban(ctx, user_id:int):
@@ -1904,8 +2021,8 @@ async def kick(ctx, member:discord.Member,*,reason="no reason provided"):
     record_modlog(ctx.guild, member, "Kick", ctx.author, reason)
     await ctx.send(embed=result_embed("Member Kicked", "User", fmt_user(member), extra=[("Reason", reason), ("Moderator", ctx.author.mention)]))
 
-@bot.command(aliases=["timeout","to"])
-async def mute(ctx,member:discord.Member,minutes:int=10,*,reason="no reason provided"):
+@bot.group(name="mute", aliases=["timeout","to"], invoke_without_command=True)
+async def mute(ctx,member:discord.Member=None,minutes:int=10,*,reason="no reason provided"):
     if not role_ok(ctx.author, MUTE_ROLES):
         return await ctx.send(embed=make_embed("no permission", "you need the configured mute role or Administrator."))
     if not bot_can(ctx, "moderate_members"):
@@ -1957,7 +2074,7 @@ async def warnings(ctx,member:discord.Member=None):
     body="\n".join(f"`{i:02}` **{r}**" for i,r in enumerate(items,1)) or "No warnings recorded."
     await ctx.send(embed=result_embed(f"Warnings · {member.display_name}", "User", fmt_user(member), extra=[("Warnings", body)]))
 
-@bot.command(aliases=["p","clear"])
+@bot.group(name="purge", aliases=["p","clear"], invoke_without_command=True)
 async def purge(ctx,amount:int=10):
     if not role_ok(ctx.author,PURGE_ROLES):
         return await ctx.send(embed=make_embed("no permission", "you need the configured purge role or Administrator."))
@@ -1992,7 +2109,7 @@ async def lock(ctx):
     except discord.HTTPException:
         pass
 
-@bot.command(aliases=["ul"])
+@bot.group(name="unlock", aliases=["ul"], invoke_without_command=True)
 async def unlock(ctx):
     # Lock/unlock are intentionally silent for users without moderation access.
     if not role_ok(ctx.author, LOCK_ROLES):
@@ -2394,10 +2511,12 @@ async def announce(ctx, *, message):
     await ctx.send(embed=e)
 
 
-@bot.hybrid_command(name="slowmode")
+@bot.group(name="slowmode", invoke_without_command=True)
 @commands.has_permissions(manage_channels=True)
-async def slowmode(ctx, seconds: int):
+async def slowmode(ctx, seconds: int = None):
     """Set channel slowmode."""
+    if seconds is None:
+        return await ctx.send(embed=make_embed("slowmode", f"usage: `{PREFIX}slowmode <seconds>` or `{PREFIX}slowmode on/off [channel]`."))
     if not 0 <= seconds <= 21600:
         return await ctx.send(embed=make_embed("slowmode", "use a value from 0 to 21600 seconds."))
     await ctx.channel.edit(slowmode_delay=seconds)
@@ -2414,14 +2533,27 @@ async def nick(ctx, member: discord.Member, *, nickname: str = None):
     await ctx.send(embed=make_embed("nickname", f"nickname updated for {member.mention}."))
 
 
-@bot.hybrid_command(name="role", aliases=["r"])
+@bot.group(name="role", aliases=["r"], invoke_without_command=True)
 @commands.has_permissions(manage_roles=True)
-async def addrole(ctx, member: discord.Member, role: discord.Role):
-    """Give a role to a member."""
-    if role >= ctx.guild.me.top_role or role >= ctx.author.top_role:
+async def addrole(ctx, member: discord.Member = None, role: discord.Role = None):
+    """Toggle a role on a member: add it once, remove it if used again."""
+    if member is None or role is None:
+        return await ctx.send(embed=make_embed("role", f"usage: `{PREFIX}role <member> <role>` or `{PREFIX}role <subcommand>`."))
+    if role >= ctx.guild.me.top_role or (not ctx.author.guild_permissions.administrator and role >= ctx.author.top_role):
         return await ctx.send(embed=make_embed("error", "that role is too high for you or the bot."))
-    await member.add_roles(role, reason=f"role added by {ctx.author}")
-    await ctx.send(embed=action_embed(f"Added {role.mention} to {member.mention}", added=True))
+    if role in member.roles:
+        await member.remove_roles(role, reason=f"role toggled off by {ctx.author}")
+        icon = "<:remove:1557785190183600258>"
+        message = f"Removed {role.mention} from {member.mention}"
+    else:
+        await member.add_roles(role, reason=f"role toggled on by {ctx.author}")
+        icon = "<:add:1557785192712642634>"
+        message = f"Added {role.mention} to {member.mention}"
+    # Use the matching custom emoji for each action and include the command invoker.
+    await ctx.send(embed=discord.Embed(
+        description=f"{icon} {ctx.author.mention}: {message}",
+        color=COLOR,
+    ))
 
 
 @bot.hybrid_command(name="removerole")
@@ -2988,18 +3120,37 @@ async def create_vc(ctx, *, name: str):
     await ctx.send(embed=e)
 
 
-@bot.hybrid_command(name="remind")
-async def remind(ctx, duration: str, *, message: str):
+@bot.group(name="remind", invoke_without_command=True)
+async def remind(ctx, duration: str = None, *, message: str = None):
     """Create a personal reminder."""
+    if not duration or not message:
+        return await ctx.send(embed=make_embed("reminder", f"usage: `{PREFIX}remind <duration> <message>`; examples: `10m homework`, `2h call mom`."))
     seconds = parse_duration(duration)
-    if seconds is None:
+    if seconds is None or seconds < 1:
         return await ctx.send(embed=make_embed("reminder", "duration must look like `30s`, `10m`, `2h`, or `1d`."))
-    await ctx.send(embed=make_embed("reminder set", f"I'll remind you <t:{int(time.time()+seconds)}:R>."))
-    await asyncio.sleep(seconds)
-    try:
-        await ctx.author.send(embed=make_embed("⏰ reminder", message))
-    except discord.HTTPException:
-        await ctx.channel.send(ctx.author.mention, embed=make_embed("⏰ reminder", message))
+    data = _load_json_config("reminders.json", {})
+    key = str(ctx.author.id)
+    items = data.setdefault(key, [])
+    rid = max([int(x.get("id", 0)) for x in items] + [0]) + 1
+    due = int(time.time() + seconds)
+    items.append({"id": rid, "guild_id": ctx.guild.id if ctx.guild else None, "channel_id": ctx.channel.id, "message": message[:500], "due": due})
+    _save_json_file("reminders.json", data)
+    await ctx.send(embed=make_embed("reminder set", f"**ID:** `{rid}`\n**Reminder:** {message}\n**Due:** <t:{due}:R>"))
+    async def deliver_reminder():
+        await asyncio.sleep(seconds)
+        latest = _load_json_config("reminders.json", {})
+        latest_items = latest.get(key, [])
+        found = next((x for x in latest_items if int(x.get("id", 0)) == rid), None)
+        if not found:
+            return
+        latest[key] = [x for x in latest_items if int(x.get("id", 0)) != rid]
+        _save_json_file("reminders.json", latest)
+        try:
+            await ctx.author.send(embed=make_embed("reminder", message))
+        except discord.HTTPException:
+            try: await ctx.channel.send(ctx.author.mention, embed=make_embed("reminder", message))
+            except discord.HTTPException: pass
+    bot.loop.create_task(deliver_reminder())
 
 
 # =========================
@@ -3050,7 +3201,7 @@ async def channelstats(ctx, channel: discord.TextChannel = None):
 
 @bot.command(aliases=["clonechannel"])
 @commands.has_permissions(manage_channels=True)
-async def channelclone(ctx, channel: discord.abc.GuildChannel = None, *, name: str = None):
+async def channelclone(ctx, channel: discord.TextChannel = None, *, name: str = None):
     channel = channel or ctx.channel
     if not hasattr(channel, "clone"):
         return await ctx.send(embed=make_embed("channel clone", "that channel type cannot be cloned."))
@@ -3095,22 +3246,20 @@ async def unroleall(ctx, role: discord.Role):
                 pass
     await ctx.send(embed=action_embed(f"Removed {role.mention} from `{removed}` members", removed=True))
 
-@bot.command()
+@bot.group(name="lockdown", invoke_without_command=True)
 @commands.has_permissions(manage_channels=True)
-async def lockdown(ctx, *, reason: str = "Server lockdown"):
+async def lockdown(ctx, channel: discord.TextChannel = None, *, reason: str = "Server lockdown"):
+    targets = [channel] if channel else [c for c in ctx.guild.text_channels if c != ctx.channel]
     changed = 0
-    me = ctx.guild.me
-    for channel in ctx.guild.text_channels:
-        if channel == ctx.channel:
-            continue
+    for target in targets:
         try:
-            overwrite = channel.overwrites_for(ctx.guild.default_role)
+            overwrite = target.overwrites_for(ctx.guild.default_role)
             overwrite.send_messages = False
-            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite, reason=f"{reason} by {ctx.author}")
+            await target.set_permissions(ctx.guild.default_role, overwrite=overwrite, reason=f"{reason} by {ctx.author}")
             changed += 1
         except (discord.Forbidden, discord.HTTPException):
             pass
-    await ctx.send(embed=make_embed("lockdown", f"locked `{changed}` text channels.\n\n**Reason**\n{reason}"))
+    await ctx.send(embed=make_embed("lockdown", f"locked `{changed}` text channel(s).\n\n**Reason**\n{reason}"))
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
@@ -3136,7 +3285,7 @@ async def cleanup(ctx, amount: int = 50):
     try: await msg.delete()
     except discord.HTTPException: pass
 
-@bot.command(aliases=["notes"])
+@bot.group(name="notes", aliases=["modnote"], invoke_without_command=True)
 async def modnote(ctx, action="list", member: discord.Member = None, *, note: str = None):
     if not (ctx.author.guild_permissions.administrator or any(r.id in WARN_ROLES for r in ctx.author.roles)):
         return
@@ -3155,17 +3304,19 @@ async def modnote(ctx, action="list", member: discord.Member = None, *, note: st
     lines = [f"`{i+1}` {x['note']} · <t:{x['time']}:R>" for i,x in enumerate(notes[-10:])]
     await ctx.send(embed=make_embed("mod notes", "\n".join(lines) if lines else "no notes."))
 
-@bot.command(aliases=["history"])
-async def cases(ctx, member: discord.Member):
+@bot.group(name="history", aliases=["cases"], invoke_without_command=True)
+async def cases(ctx, member: discord.Member = None):
     if not (ctx.author.guild_permissions.administrator or any(r.id in WARN_ROLES for r in ctx.author.roles)):
         return
+    if member is None:
+        return await ctx.send(embed=make_embed("mod history", f"usage: `{PREFIX}history @member` or `{PREFIX}history view <case id>`."))
     entries = modlog_data[ctx.guild.id].get(member.id, [])[-25:]
     if not entries:
         return await ctx.send(embed=make_embed("mod cases", f"no cases found for {member.mention}."))
     lines=[]
     for i,e in enumerate(entries, 1):
         mod = ctx.guild.get_member(int(e.get("moderator_id", 0)))
-        lines.append(f"`{i:02}` **{e.get('action','UNKNOWN')}** · {e.get('reason','No reason')} · {mod.mention if mod else 'Unknown'} · <t:{int(e.get('timestamp',time.time()))}:R>")
+        lines.append(f"`{e.get('case_id', i)}` **{e.get('action','UNKNOWN')}** · {e.get('reason','No reason')} · {mod.mention if mod else 'Unknown'} · <t:{int(e.get('timestamp',time.time()))}:R>")
     await ctx.send(embed=make_embed("mod cases", "\n".join(lines)))
 
 @bot.command()
@@ -3540,7 +3691,7 @@ async def settopic(ctx, *, topic=None):
 
 
 @bot.command()
-async def clone(ctx, channel: discord.abc.GuildChannel = None, *, name=None):
+async def clone(ctx, channel: discord.TextChannel = None, *, name=None):
     if not has_manage_server(ctx): return
     channel = channel or ctx.channel
     try:
@@ -3842,9 +3993,9 @@ async def memberpermissions(ctx, member: discord.Member = None):
     enabled = [name.replace('_',' ') for name,value in p if value]
     await ctx.send(embed=make_embed("member permissions", f"**User** {member.mention}\n\n" + (' · '.join(f'`{x}`' for x in enabled) or '`none`')))
 
-@bot.command()
+@bot.command(name="renameserver")
 @commands.has_permissions(manage_guild=True)
-async def rename(ctx, *, name):
+async def renameserver(ctx, *, name):
     name = name[:100].strip()
     if not name: return await ctx.send(embed=make_embed("rename", "enter a server name."))
     try:
@@ -4184,5 +4335,1840 @@ async def on_command_error(ctx, error):
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
+
+
+
+# ---------------------------------------------------------------------------
+# Expanded Bleed-inspired compatibility command suite (original implementation)
+# ---------------------------------------------------------------------------
+COMPAT_PATH = "compat_config.json"
+try:
+    with open(COMPAT_PATH, "r", encoding="utf-8") as _f:
+        COMPAT = json.load(_f)
+except (OSError, json.JSONDecodeError):
+    COMPAT = {}
+
+def compat_save():
+    with open(COMPAT_PATH, "w", encoding="utf-8") as _f:
+        json.dump(COMPAT, _f, indent=2)
+
+def compat_guild(ctx):
+    return COMPAT.setdefault(str(ctx.guild.id), {})
+
+def compat_need_manage(ctx):
+    if not (ctx.author.guild_permissions.manage_guild or ctx.author.guild_permissions.administrator):
+        return False
+    return True
+
+async def compat_reply(ctx, title, body):
+    await ctx.send(embed=make_embed(title, body))
+
+@bot.group(name="prefix", invoke_without_command=True)
+async def prefix_group(ctx):
+    await compat_reply(ctx, "prefix", f"Server prefix: `{PREFIX}`\nUse `{PREFIX}prefix set <prefix>` to configure a per-server prefix.")
+
+@prefix_group.command(name="view")
+async def prefix_view(ctx):
+    await compat_reply(ctx, "prefix", f"Server prefix: `{compat_guild(ctx).get('prefix', PREFIX)}`")
+
+@prefix_group.command(name="set")
+async def prefix_set(ctx, *, prefix: str):
+    if not compat_need_manage(ctx):
+        return await compat_reply(ctx, "prefix", "You need Manage Server.")
+    prefix = prefix.strip()
+    if not prefix or len(prefix) > 5 or any(c.isspace() for c in prefix):
+        return await compat_reply(ctx, "prefix", "Choose a prefix between 1 and 5 characters, without spaces.")
+    compat_guild(ctx)["prefix"] = prefix
+    compat_save()
+    await compat_reply(ctx, "prefix", f"Saved server prefix `{prefix}`. It will be used for future messages in this server.")
+
+@prefix_group.command(name="remove")
+async def prefix_remove(ctx):
+    if not compat_need_manage(ctx):
+        return await compat_reply(ctx, "prefix", "You need Manage Server.")
+    compat_guild(ctx).pop("prefix", None); compat_save()
+    await compat_reply(ctx, "prefix", "Removed the saved server-prefix setting.")
+
+@prefix_group.command(name="self")
+async def prefix_self(ctx, *, prefix: str):
+    await compat_reply(ctx, "prefix self", "Personal prefixes across servers are not available in this self-hosted bot.")
+
+@bot.command(name="boosterrole", aliases=["brrole"])
+async def boosterrole_compat(ctx, action="help", *, value=""):
+    action=action.lower()
+    # Route established BR actions through the existing BR command.
+    cmd=bot.get_command("br")
+    if action in {"create","color","colour","icon","share","name","rename","delete","remove","list","base","override"}:
+        return await ctx.invoke(cmd, action, value=value)
+    if action in {"random","dominant","cleanup","limit","award","link","filter"}:
+        if not compat_need_manage(ctx) and action not in {"random","dominant"}:
+            return await compat_reply(ctx,"Booster Role","You need Manage Server.")
+        cfg=compat_guild(ctx).setdefault("boosterrole", {})
+        if action in {"random","dominant"}:
+            role_id=br_config.get(ctx.guild.id,{}).get(ctx.author.id)
+            role=ctx.guild.get_role(role_id) if role_id else None
+            if not role: return await compat_reply(ctx,"Booster Role",f"Create your role first with `{PREFIX}br create <name>`.")
+            color=(random.randint(0,0xFFFFFF) if action=="random" else int(ctx.author.display_avatar.url[-6:],16) if False else random.randint(0,0xFFFFFF))
+            await role.edit(color=discord.Color(color))
+            return await compat_reply(ctx,"Booster Role",f"Updated {role.mention}.")
+        if action=="cleanup":
+            removed=0
+            for owner_id, role_id in list(br_config.get(ctx.guild.id,{}).items()):
+                role=ctx.guild.get_role(role_id)
+                if role and not role.members:
+                    try: await role.delete(reason="Booster role cleanup")
+                    except discord.HTTPException: continue
+                    br_config[ctx.guild.id].pop(owner_id,None); removed+=1
+            save_br_config()
+            return await compat_reply(ctx,"Booster Role",f"Removed `{removed}` unused booster roles.")
+        if action=="limit":
+            try: cfg["limit"]=max(1,min(100,int(value)))
+            except ValueError: return await compat_reply(ctx,"Booster Role","Usage: `,boosterrole limit <1-100>`")
+        elif action=="award":
+            role=ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+            cfg["award_role"]=role.id if role else None
+        elif action=="link":
+            parts=value.split()
+            if len(parts)<2: return await compat_reply(ctx,"Booster Role","Usage: `,boosterrole link @member @role`")
+            member=ctx.message.mentions[0] if ctx.message.mentions else None
+            role=ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+            if not member or not role: return await compat_reply(ctx,"Booster Role","Mention a member and role.")
+            br_config.setdefault(ctx.guild.id,{})[member.id]=role.id; save_br_config()
+            return await compat_reply(ctx,"Booster Role",f"Linked {role.mention} to {member.mention}.")
+        elif action=="filter":
+            words=cfg.setdefault("blocked_words",[])
+            if not value.strip(): return await compat_reply(ctx,"Booster Role","Usage: `,boosterrole filter <word>`")
+            if value.lower() not in words: words.append(value.lower())
+        compat_save()
+        return await compat_reply(ctx,"Booster Role",f"Saved `{action}` configuration.")
+    await compat_reply(ctx,"Booster Role",f"Use `{PREFIX}br create`, `{PREFIX}br color`, `{PREFIX}br icon`, `{PREFIX}br share`, `{PREFIX}br rename`, `{PREFIX}br delete`, or `{PREFIX}boosterrole {action}`.")
+
+@bot.command(name="boosts")
+async def boosts_compat(ctx, action="list", channel: discord.TextChannel=None, *, message=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"boosts","You need Manage Server.")
+    cfg=compat_guild(ctx).setdefault("boost_messages",{})
+    action=action.lower()
+    if action=="variables":
+        return await compat_reply(ctx,"boosts variables","Available variables: `{user}`, `{username}`, `{server}`, `{membercount}`, `{boostcount}`, `{channel}`.")
+    if action=="add":
+        if not channel or not message: return await compat_reply(ctx,"boosts","Usage: `,boosts add #channel <message>`")
+        cfg[str(channel.id)]=message; compat_save()
+        return await compat_reply(ctx,"boosts",f"Saved boost message for {channel.mention}.")
+    if action=="remove":
+        if not channel: return await compat_reply(ctx,"boosts","Usage: `,boosts remove #channel`")
+        cfg.pop(str(channel.id),None); compat_save()
+        return await compat_reply(ctx,"boosts",f"Removed boost message for {channel.mention}.")
+    if action=="view":
+        if not channel: channel=ctx.channel
+        return await compat_reply(ctx,"boosts",cfg.get(str(channel.id),"No boost message configured for that channel."))
+    await compat_reply(ctx,"boosts","\n".join(f"<#{cid}> — {msg}" for cid,msg in cfg.items()) or "No boost messages configured.")
+
+@bot.command(name="stickymessage", aliases=["stickies"])
+async def stickymessage_compat(ctx, action="list", channel: discord.TextChannel=None, *, message=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"stickymessage","You need Manage Server.")
+    cfg=compat_guild(ctx).setdefault("sticky_messages",{})
+    action=action.lower()
+    if action=="add":
+        channel=channel or ctx.channel
+        if not message: return await compat_reply(ctx,"stickymessage","Usage: `,stickymessage add #channel <message>`")
+        cfg[str(channel.id)]=message; compat_save()
+        return await compat_reply(ctx,"stickymessage",f"Saved sticky text for {channel.mention}.")
+    if action=="remove":
+        channel=channel or ctx.channel; cfg.pop(str(channel.id),None); compat_save()
+        return await compat_reply(ctx,"stickymessage",f"Removed sticky configuration for {channel.mention}.")
+    if action=="view":
+        channel=channel or ctx.channel
+        return await compat_reply(ctx,"stickymessage",cfg.get(str(channel.id),"No sticky configured."))
+    await compat_reply(ctx,"stickymessage","\n".join(f"<#{cid}> — {msg}" for cid,msg in cfg.items()) or "No sticky messages configured.")
+
+@bot.command(name="imgonly", aliases=["galleryonly"])
+async def imgonly_compat(ctx, action="list", channel: discord.TextChannel=None):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"imgonly","You need Manage Channels.")
+    cfg=compat_guild(ctx).setdefault("imgonly",[])
+    action=action.lower(); channel=channel or ctx.channel
+    if action=="add":
+        if channel.id not in cfg: cfg.append(channel.id)
+        compat_save(); return await compat_reply(ctx,"imgonly",f"Added {channel.mention} to image-only channels.")
+    if action=="remove":
+        cfg[:]=[x for x in cfg if x!=channel.id]; compat_save()
+        return await compat_reply(ctx,"imgonly",f"Removed {channel.mention} from image-only channels.")
+    await compat_reply(ctx,"imgonly","\n".join(f"<#{cid}>" for cid in cfg) or "No image-only channels configured.")
+
+@bot.command(name="invoke")
+async def invoke_compat(ctx, action="list", *, value=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"invoke","You need Manage Server.")
+    cfg=compat_guild(ctx).setdefault("invoke_messages",{})
+    action=action.lower()
+    if action in {"list","view"}:
+        return await compat_reply(ctx,"invoke", "\n".join(f"`{k}`: {v}" for k,v in cfg.items()) or "No custom punishment messages configured.")
+    if action=="reset":
+        cfg.clear(); compat_save(); return await compat_reply(ctx,"invoke","Reset custom punishment messages.")
+    # Syntax accepts `ban dm <message>` or `ban message <message>`.
+    parts=value.split(maxsplit=1)
+    if not parts or parts[0] not in {"dm","message"}:
+        return await compat_reply(ctx,"invoke",f"Usage: `,invoke {action} dm <text>` or `,invoke {action} message <text>`")
+    cfg[f"{action}_{parts[0]}"]=parts[1] if len(parts)>1 else ""
+    compat_save(); await compat_reply(ctx,"invoke",f"Saved `{action} {parts[0]}` message template.")
+
+@bot.command(name="pagination")
+async def pagination_compat(ctx, action="list", *, value=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"pagination","You need Manage Messages.")
+    cfg=compat_guild(ctx).setdefault("pagination",{})
+    action=action.lower()
+    if action=="list": return await compat_reply(ctx,"pagination", "\n".join(cfg.keys()) or "No pagination entries saved.")
+    if action in {"reset","delete","remove"}:
+        if action=="reset": cfg.clear()
+        else: cfg.pop(value.strip(),None)
+        compat_save(); return await compat_reply(ctx,"pagination","Updated pagination configuration.")
+    if action in {"add","set","update"}:
+        if not value: return await compat_reply(ctx,"pagination",f"Usage: `,pagination {action} <message-link or ID> <embed text>`")
+        key=value.split()[0]; cfg[key]=value[len(key):].strip(); compat_save()
+        return await compat_reply(ctx,"pagination",f"Saved pagination draft for `{key}`.")
+    await compat_reply(ctx,"pagination","Actions: list, add, set, update, remove, delete, reset.")
+
+@bot.command(name="disablecommand")
+async def disablecommand_compat(ctx, action_or_target=None, *, command_name=None):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"disablecommand","You need Manage Channels.")
+    cfg=compat_guild(ctx).setdefault("disabled_commands",{})
+    if action_or_target=="list":
+        return await compat_reply(ctx,"disablecommand","\n".join(f"{k}: {', '.join(v)}" for k,v in cfg.items()) or "No channel command restrictions saved.")
+    channel=ctx.guild.get_channel(int(re.sub(r"\D","",str(action_or_target or "")))) if str(action_or_target or "").isdigit() else ctx.channel
+    name=command_name or str(action_or_target or "")
+    if not name: return await compat_reply(ctx,"disablecommand","Usage: `,disablecommand [#channel] <command>`")
+    cfg.setdefault(str(channel.id),[])
+    if name not in cfg[str(channel.id)]: cfg[str(channel.id)].append(name)
+    compat_save(); await compat_reply(ctx,"disablecommand",f"Saved `{name}` as disabled in {channel.mention}. (The restriction is recorded; runtime blocking is not enabled yet.)")
+
+@bot.command(name="enablecommand")
+async def enablecommand_compat(ctx, action_or_target=None, *, command_name=None):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"enablecommand","You need Manage Channels.")
+    cfg=compat_guild(ctx).setdefault("disabled_commands",{})
+    if action_or_target=="all":
+        name=command_name or ""
+        for cid, names in cfg.items(): cfg[cid]=[x for x in names if x!=name]
+        compat_save(); return await compat_reply(ctx,"enablecommand",f"Removed `{name}` from saved disabled-command lists.")
+    channel=ctx.guild.get_channel(int(re.sub(r"\D","",str(action_or_target or "")))) if str(action_or_target or "").isdigit() else ctx.channel
+    name=command_name or str(action_or_target or "")
+    cfg[str(channel.id)]=[x for x in cfg.get(str(channel.id),[]) if x!=name]
+    compat_save(); await compat_reply(ctx,"enablecommand",f"Enabled `{name}` in {channel.mention} in the saved configuration.")
+
+@bot.command(name="disableevent")
+async def disableevent_compat(ctx, action="list", *, event=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"disableevent","You need Manage Channels.")
+    cfg=compat_guild(ctx).setdefault("disabled_events",[])
+    if action=="list": return await compat_reply(ctx,"disableevent",", ".join(cfg) or "No events disabled.")
+    if event and event not in cfg: cfg.append(event)
+    compat_save(); await compat_reply(ctx,"disableevent",f"Saved event setting: `{event or action}`.")
+
+@bot.command(name="enableevent")
+async def enableevent_compat(ctx, action="all", *, event=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"enableevent","You need Manage Channels.")
+    cfg=compat_guild(ctx).setdefault("disabled_events",[])
+    target=event or ("" if action=="all" else action)
+    if action=="all" or target=="all": cfg.clear()
+    else: cfg[:]=[x for x in cfg if x!=target]
+    compat_save(); await compat_reply(ctx,"enableevent",f"Updated event configuration for `{target or 'all'}`.")
+
+@bot.command(name="disablemodule")
+async def disablemodule_compat(ctx, module="list", *, channel_text=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"disablemodule","You need Manage Channels.")
+    cfg=compat_guild(ctx).setdefault("disabled_modules",{})
+    if module=="list": return await compat_reply(ctx,"disablemodule","\n".join(f"{c}: {', '.join(v)}" for c,v in cfg.items()) or "No modules disabled.")
+    cfg.setdefault(str(ctx.channel.id),[])
+    if module not in cfg[str(ctx.channel.id)]: cfg[str(ctx.channel.id)].append(module)
+    compat_save(); await compat_reply(ctx,"disablemodule",f"Saved module `{module}` as disabled in {ctx.channel.mention}.")
+
+@bot.command(name="enablemodule")
+async def enablemodule_compat(ctx, module="all", *, channel_text=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"enablemodule","You need Manage Channels.")
+    cfg=compat_guild(ctx).setdefault("disabled_modules",{})
+    if module=="all":
+        cfg.clear()
+    else:
+        cfg[str(ctx.channel.id)]=[x for x in cfg.get(str(ctx.channel.id),[]) if x!=module]
+    compat_save(); await compat_reply(ctx,"enablemodule",f"Updated module configuration for `{module}`.")
+
+@bot.command(name="seticon")
+async def seticon_compat(ctx, *, url=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"seticon","You need Manage Guild.")
+    url=url.strip() or (ctx.message.attachments[0].url if ctx.message.attachments else "")
+    if not url: return await compat_reply(ctx,"seticon","Provide an image URL or attach an image.")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status!=200: return await compat_reply(ctx,"seticon","Couldn't download that image.")
+                data=await response.read()
+        await ctx.guild.edit(icon=data, reason=f"Server icon changed by {ctx.author}")
+        await compat_reply(ctx,"seticon","Updated the server icon.")
+    except (discord.HTTPException, aiohttp.ClientError) as e:
+        await compat_reply(ctx,"seticon",f"Couldn't update the icon: {e}")
+
+@bot.command(name="setbanner")
+async def setbanner_compat(ctx, *, url=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"setbanner","You need Manage Guild.")
+    await compat_reply(ctx,"setbanner","Discord only allows server-banner changes for eligible servers. This bot build doesn't yet upload a banner image through the API.")
+
+@bot.command(name="setsplashbackground")
+async def setsplash_compat(ctx, *, url=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"setsplashbackground","You need Manage Guild.")
+    await compat_reply(ctx,"setsplashbackground","This action is not supported by the installed discord.py API/server feature set.")
+
+@bot.command(name="extractemotes", aliases=["extractemojis"])
+async def extractemotes_compat(ctx):
+    if not ctx.author.guild_permissions.administrator: return await compat_reply(ctx,"extractemotes","You need Administrator.")
+    emotes=list(ctx.guild.emojis)
+    if not emotes: return await compat_reply(ctx,"extractemotes","This server has no custom emojis.")
+    lines=[f"{e.name}: {e.url}" for e in emotes]
+    data=("\n".join(lines)).encode()
+    await ctx.send(file=discord.File(io.BytesIO(data), filename=f"{ctx.guild.id}-emojis.txt"))
+
+@bot.command(name="extractstickers")
+async def extractstickers_compat(ctx):
+    if not ctx.author.guild_permissions.administrator: return await compat_reply(ctx,"extractstickers","You need Administrator.")
+    stickers=list(ctx.guild.stickers)
+    data="\n".join(f"{s.name}: {s.url}" for s in stickers).encode()
+    await ctx.send(file=discord.File(io.BytesIO(data), filename=f"{ctx.guild.id}-stickers.txt"))
+
+@bot.command(name="reposter")
+async def reposter_compat(ctx, action="view", *, value=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"reposter","You need Manage Server.")
+    cfg=compat_guild(ctx).setdefault("reposter",{})
+    action=action.lower()
+    if action=="view": return await compat_reply(ctx,"reposter","\n".join(f"{k}: {v}" for k,v in cfg.items()) or "No repost settings configured.")
+    if action=="reset": cfg.clear()
+    else: cfg[action]=value or "on"
+    compat_save(); await compat_reply(ctx,"reposter",f"Saved repost setting `{action}` = `{cfg.get(action,'off')}`.")
+
+@bot.command(name="customize")
+async def customize_compat(ctx, action="view", *, value=""):
+    if ctx.guild.owner_id != ctx.author.id: return await compat_reply(ctx,"customize","Only the server owner can use this command.")
+    cfg=compat_guild(ctx).setdefault("customize",{})
+    if action=="view": return await compat_reply(ctx,"customize","\n".join(f"{k}: {v}" for k,v in cfg.items()) or "No custom bot appearance saved.")
+    cfg[action]=value; compat_save()
+    await compat_reply(ctx,"customize",f"Saved bot customization `{action}`. Applying per-server bot avatars/banners requires Discord application support not available to this bot.")
+
+@bot.command(name="badge")
+async def badge_compat(ctx, action="view", *, value=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"badge","You need Manage Server.")
+    cfg=compat_guild(ctx).setdefault("badge",{})
+    if action=="view": return await compat_reply(ctx,"badge","\n".join(f"{k}: {v}" for k,v in cfg.items()) or "No guild-tag reward settings.")
+    cfg[action]=value or "on"; compat_save()
+    await compat_reply(ctx,"badge",f"Saved badge setting `{action}`. Guild-tag detection/role awards require Discord guild-tag event support not available in this build.")
+
+@bot.command(name="honeypot")
+async def honeypot_compat(ctx, action="list", channel: discord.TextChannel=None, *, punishment="kick"):
+    if not ctx.author.guild_permissions.administrator: return await compat_reply(ctx,"honeypot","You need Administrator.")
+    cfg=compat_guild(ctx).setdefault("honeypot",{})
+    action=action.lower()
+    if action=="add":
+        channel=channel or ctx.channel
+        cfg[str(channel.id)]=punishment; compat_save()
+        return await compat_reply(ctx,"honeypot",f"Added {channel.mention} as a honeypot with `{punishment}` configured.")
+    if action=="remove":
+        channel=channel or ctx.channel; cfg.pop(str(channel.id),None); compat_save()
+        return await compat_reply(ctx,"honeypot",f"Removed {channel.mention} from honeypots.")
+    await compat_reply(ctx,"honeypot","\n".join(f"<#{cid}> — `{pun}`" for cid,pun in cfg.items()) or "No honeypot channels configured.")
+
+@bot.command(name="pins")
+async def pins_compat(ctx, action="config", *, value=""):
+    if not compat_need_manage(ctx): return await compat_reply(ctx,"pins","You need Manage Guild.")
+    cfg=compat_guild(ctx).setdefault("pins",{"enabled":False,"channel":None,"unpin":True})
+    action=action.lower()
+    if action=="config": return await compat_reply(ctx,"pins",f"enabled: `{cfg['enabled']}`\narchive channel: {f'<#{cfg['channel']}>' if cfg.get('channel') else '`not set`'}\nunpin during archive: `{cfg['unpin']}`")
+    if action=="set": cfg["enabled"]=value.lower() in {"on","yes","true","enable","enabled"}
+    elif action=="reset": cfg.update({"enabled":False,"channel":None,"unpin":True})
+    elif action=="channel":
+        channel=ctx.message.channel_mentions[0] if ctx.message.channel_mentions else None
+        if not channel: return await compat_reply(ctx,"pins","Usage: `,pins channel #channel`")
+        cfg["channel"]=channel.id
+    elif action=="unpin": cfg["unpin"]=value.lower() in {"on","yes","true","enable","enabled"}
+    elif action=="archive":
+        pins=await ctx.channel.pins()
+        if not pins: return await compat_reply(ctx,"pins","No pinned messages to archive.")
+        dest=ctx.guild.get_channel(cfg.get("channel")) or ctx.channel
+        await dest.send(embed=make_embed("pin archive", "\n".join(f"[{m.author}]({m.jump_url}): {m.content[:150]}" for m in pins[:20])))
+        if cfg.get("unpin"):
+            for m in pins:
+                try: await m.unpin(reason=f"Pin archive by {ctx.author}")
+                except discord.HTTPException: pass
+    compat_save(); await compat_reply(ctx,"pins","Updated pin archive configuration.")
+
+@bot.command(name="webhook")
+async def webhook_compat(ctx, action="list", *, value=""):
+    if not ctx.author.guild_permissions.manage_webhooks: return await compat_reply(ctx,"webhook","You need Manage Webhooks.")
+    action=action.lower()
+    try:
+        hooks=await ctx.channel.webhooks()
+        if action=="list":
+            return await compat_reply(ctx,"webhook","\n".join(f"`{w.id}` — {w.name}" for w in hooks) or "No webhooks in this channel.")
+        if action=="create":
+            hook=await ctx.channel.create_webhook(name=(value.strip() or "bleeed webhook"))
+            return await compat_reply(ctx,"webhook",f"Created webhook `{hook.name}` (`{hook.id}`).")
+        if action=="delete":
+            hook=next((w for w in hooks if str(w.id)==value.strip() or w.name==value.strip()),None)
+            if not hook: return await compat_reply(ctx,"webhook","Couldn't find that webhook by ID or name.")
+            await hook.delete(reason=f"Webhook deleted by {ctx.author}")
+            return await compat_reply(ctx,"webhook",f"Deleted webhook `{hook.name}`.")
+        await compat_reply(ctx,"webhook","Actions: list, create <name>, delete <ID or name>. Sending/editing requires a webhook URL or message link.")
+    except discord.HTTPException as e: await compat_reply(ctx,"webhook",f"Webhook operation failed: {e}")
+
+@bot.command(name="fakepermissions")
+async def fakepermissions_compat(ctx, action="list", role: discord.Role=None, *, permission=""):
+    if ctx.guild.owner_id != ctx.author.id: return await compat_reply(ctx,"fakepermissions","Only the server owner can use this command.")
+    cfg=compat_guild(ctx).setdefault("fakepermissions",{})
+    action=action.lower()
+    if action=="reset": cfg.clear(); compat_save(); return await compat_reply(ctx,"fakepermissions","Reset fake permission labels.")
+    if action=="list":
+        if role: return await compat_reply(ctx,"fakepermissions",", ".join(cfg.get(str(role.id),[])) or "No fake permissions for that role.")
+        return await compat_reply(ctx,"fakepermissions","\n".join(f"<@&{rid}>: {', '.join(perms)}" for rid,perms in cfg.items()) or "No fake permissions configured.")
+    if not role or not permission: return await compat_reply(ctx,"fakepermissions","Usage: `,fakepermissions add @role <permission>` or `remove @role <permission>`")
+    perms=cfg.setdefault(str(role.id),[])
+    if action=="add" and permission not in perms: perms.append(permission)
+    elif action=="remove": cfg[str(role.id)]=[p for p in perms if p!=permission]
+    compat_save()
+    await compat_reply(ctx,"fakepermissions",f"Updated informational fake-permission labels for {role.mention}. These do not grant real Discord permissions.")
+
+@bot.command(name="enablecommandall")
+async def enablecommandall_compat(ctx, *, command_name: str):
+    ctx.message.content=f"{PREFIX}enablecommand all {command_name}"
+    await enablecommand_compat(ctx, "all", command_name=command_name)
+
+@bot.command(name="disablecommandall")
+async def disablecommandall_compat(ctx, *, command_name: str):
+    ctx.message.content=f"{PREFIX}disablecommand all {command_name}"
+    await disablecommand_compat(ctx, "all", command_name=command_name)
+
+
+
+def _bleeed_dynamic_prefix(bot_instance, message):
+    guild_id = getattr(getattr(message, "guild", None), "id", None)
+    configured = COMPAT.get(str(guild_id), {}).get("prefix") if guild_id else None
+    return configured or PREFIX
+
+bot.command_prefix = _bleeed_dynamic_prefix
+
+# Expose the new command suite in the paginated command browser.
+CATEGORIES.extend([
+    ("Prefix & Setup", ["prefix", "settings", "seticon", "setbanner", "setsplashbackground"]),
+    ("Booster Roles Plus", ["boosterrole", "br"]),
+    ("Messages & Community", ["boosts", "stickymessage", "imgonly", "welcome", "goodbye", "suggest", "suggestchannel", "reposter", "badge", "honeypot"]),
+    ("Configuration", ["invoke", "alias", "fakepermissions", "pagination", "pins", "webhook", "customize"]),
+    ("Command Controls", ["disablecommand", "enablecommand", "disablecommandall", "enablecommandall", "disableevent", "enableevent", "disablemodule", "enablemodule", "ignore", "commandtoggle"]),
+    ("Exports", ["extractemotes", "extractstickers"]),
+])
+
+
+COMMAND_INFO.update({
+    "prefix": ("View or configure the server command prefix.", "prefix [view|set|remove] [prefix]", "prefix set !", []),
+    "boosterrole": ("Manage booster role settings and tools.", "boosterrole <action> [value]", "boosterrole cleanup", ["brrole"]),
+    "boosts": ("Configure boost messages per channel.", "boosts <add|view|list|remove|variables> [channel] [message]", "boosts add #general Thanks for boosting!", []),
+    "stickymessage": ("Manage sticky message templates by channel.", "stickymessage <add|view|list|remove> [channel] [message]", "stickymessage add #chat Read the rules!", ["stickies"]),
+    "imgonly": ("Configure image-only channels.", "imgonly <add|remove|list> [channel]", "imgonly add #gallery", ["galleryonly"]),
+    "invoke": ("Configure custom punishment response templates.", "invoke <punishment> <dm|message> <text>", "invoke ban dm You were banned from {server}.", []),
+    "pagination": ("Save and manage pagination/embed drafts.", "pagination <list|add|set|update|remove|reset> [value]", "pagination list", []),
+    "disablecommand": ("Record a command restriction for a channel.", "disablecommand [channel] <command>", "disablecommand #general poll", []),
+    "enablecommand": ("Remove a saved command restriction.", "enablecommand [channel|all] <command>", "enablecommand #general poll", []),
+    "disablecommandall": ("Record a command restriction for every channel.", "disablecommandall <command>", "disablecommandall poll", []),
+    "enablecommandall": ("Remove a saved global command restriction.", "enablecommandall <command>", "enablecommandall poll", []),
+    "disableevent": ("Record an event setting as disabled.", "disableevent <event>", "disableevent welcome", []),
+    "enableevent": ("Enable a previously disabled event setting.", "enableevent <event|all>", "enableevent all", []),
+    "disablemodule": ("Record a module restriction for this channel.", "disablemodule <module>", "disablemodule music", []),
+    "enablemodule": ("Enable a saved module setting.", "enablemodule <module|all>", "enablemodule all", []),
+    "seticon": ("Change the server icon.", "seticon <url>", "seticon https://example.com/icon.png", []),
+    "setbanner": ("Change the server banner when supported.", "setbanner <url>", "setbanner https://example.com/banner.png", []),
+    "setsplashbackground": ("Change the server invite splash when supported.", "setsplashbackground <url>", "setsplashbackground https://example.com/splash.png", []),
+    "extractemotes": ("Export custom server emoji URLs to a text file.", "extractemotes", "extractemotes", ["extractemojis"]),
+    "extractstickers": ("Export custom server sticker URLs to a text file.", "extractstickers", "extractstickers", []),
+    "reposter": ("Configure social-media repost preferences.", "reposter <setting|view|reset> [value]", "reposter embed on", []),
+    "customize": ("Save bot appearance preferences for this server.", "customize <setting> [value]", "customize bio Welcome to our server", []),
+    "badge": ("Configure guild-tag reward preferences.", "badge <setting> [value]", "badge role on", []),
+    "honeypot": ("Manage honeypot channels.", "honeypot <add|remove|list> [channel] [punishment]", "honeypot add #bait kick", []),
+    "pins": ("Archive pinned messages and manage pin settings.", "pins <config|set|reset|channel|unpin|archive> [value]", "pins archive", []),
+    "webhook": ("List, create, or delete channel webhooks.", "webhook <list|create|delete> [name or ID]", "webhook create announcements", []),
+    "fakepermissions": ("Manage informational fake-permission labels.", "fakepermissions <add|remove|list|reset> [role] [permission]", "fakepermissions add @VIP manage messages", []),
+})
+
+
+# =========================
+# Additional moderation/server commands requested from the command reference
+# =========================
+
+@bot.command(name="tempban", aliases=["tban"])
+async def tempban(ctx, member: discord.Member, duration: str, *, reason="no reason provided"):
+    if not (ctx.author.guild_permissions.ban_members or role_ok(ctx.author, {BAN_ROLE})):
+        return await ctx.send(embed=make_embed("no permission", "you need Ban Members or the configured ban role."))
+    seconds = parse_duration(duration)
+    if not seconds:
+        return await ctx.send(embed=make_embed("invalid duration", "use a duration like `10m`, `2h`, or `3d`."))
+    if not bot_can(ctx, "ban_members") or not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("cannot tempban", "check bot permissions and role hierarchy."))
+    uid, guild_id = member.id, ctx.guild.id
+    try:
+        await member.ban(reason=f"Temporary ban by {ctx.author}: {reason}", delete_message_seconds=0)
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("tempban failed", "Discord denied the ban."))
+    record_modlog(ctx.guild, uid, "Tempban", ctx.author, f"{reason} (duration {duration})")
+    await ctx.send(embed=make_embed("member temporarily banned", f"**User**\n`{uid}`\n\n**Duration**\n`{duration}`\n\n**Reason**\n{reason}"))
+    async def expire_tempban():
+        await asyncio.sleep(seconds)
+        guild = bot.get_guild(guild_id)
+        if guild:
+            try: await guild.unban(discord.Object(id=uid), reason="Temporary ban expired")
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException): pass
+    asyncio.create_task(expire_tempban())
+
+@bot.command(name="softban")
+async def softban(ctx, member: discord.Member, delete_history: int = 86400, *, reason="no reason provided"):
+    if not (ctx.author.guild_permissions.ban_members or role_ok(ctx.author, {BAN_ROLE})):
+        return await ctx.send(embed=make_embed("no permission", "you need Ban Members or the configured ban role."))
+    if not bot_can(ctx, "ban_members") or not target_ok(ctx, member):
+        return await ctx.send(embed=make_embed("cannot softban", "check bot permissions and role hierarchy."))
+    seconds = max(0, min(int(delete_history), 604800))
+    try:
+        await member.ban(reason=f"Softban by {ctx.author}: {reason}", delete_message_seconds=seconds)
+        await ctx.guild.unban(discord.Object(id=member.id), reason=f"Softban reversal by {ctx.author}")
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("softban failed", "Discord denied the action."))
+    record_modlog(ctx.guild, member.id, "Softban", ctx.author, reason)
+    await ctx.send(embed=make_embed("member softbanned", f"**User**\n`{member.id}`\n\n**Message history deleted**\n`{seconds}` seconds\n\n**Reason**\n{reason}"))
+
+@bot.command(name="timeoutlist", aliases=["timeout-list"])
+@commands.has_permissions(moderate_members=True)
+async def timeoutlist(ctx):
+    now = datetime.now(timezone.utc)
+    members = [m for m in ctx.guild.members if m.timed_out_until and m.timed_out_until > now]
+    lines = [f"`{i:02}` {m.mention} · ends <t:{int(m.timed_out_until.timestamp())}:R>" for i,m in enumerate(sorted(members, key=lambda x:x.timed_out_until), 1)]
+    await ctx.send(embed=make_embed("timed out members", "\n".join(lines[:50]) or "no members are currently timed out."))
+
+@bot.command(name="jail")
+async def jail(ctx, member: discord.Member, duration: str = "10m", *, reason="no reason provided"):
+    if not (ctx.author.guild_permissions.manage_messages or role_ok(ctx.author, MUTE_ROLES)):
+        return await ctx.send(embed=make_embed("no permission", "you need Manage Messages or a configured moderation role."))
+    seconds = parse_duration(duration)
+    if not seconds:
+        return await ctx.send(embed=make_embed("invalid duration", "use `10m`, `2h`, or `1d`."))
+    role = discord.utils.get(ctx.guild.roles, name="Jailed") or discord.utils.get(ctx.guild.roles, name="Jail")
+    if role is None:
+        try:
+            role = await ctx.guild.create_role(name="Jailed", reason="Jail system setup")
+            for ch in ctx.guild.channels:
+                try: await ch.set_permissions(role, view_channel=False, send_messages=False, connect=False, reason="Jail role setup")
+                except discord.HTTPException: pass
+        except discord.HTTPException:
+            return await ctx.send(embed=make_embed("jail failed", "I couldn't create the jail role. Check Manage Roles."))
+    if role >= ctx.guild.me.top_role or member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send(embed=make_embed("jail failed", "The member and jail role must be below my highest role."))
+    old_roles = [r.id for r in member.roles if r != ctx.guild.default_role and r < ctx.guild.me.top_role]
+    jail_store = _load_json_config("jail_config.json", {})
+    jail_store.setdefault(str(ctx.guild.id), {})[str(member.id)] = {"roles": old_roles, "until": int(time.time())+seconds, "reason": reason}
+    _save_json_file("jail_config.json", jail_store)
+    try:
+        if old_roles:
+            await member.remove_roles(*[r for r in member.roles if r.id in old_roles], reason=f"Jailed by {ctx.author}: {reason}")
+        await member.add_roles(role, reason=f"Jailed by {ctx.author}: {reason}")
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("jail failed", "Discord denied the role change."))
+    record_modlog(ctx.guild, member, "Jail", ctx.author, reason)
+    await ctx.send(embed=make_embed("member jailed", f"{member.mention} was jailed for `{duration}`.\n\n**Reason**\n{reason}"))
+    async def release():
+        await asyncio.sleep(seconds)
+        guild=bot.get_guild(ctx.guild.id)
+        if not guild: return
+        target=guild.get_member(member.id); jail_role=discord.utils.get(guild.roles, name="Jailed") or discord.utils.get(guild.roles, name="Jail")
+        if not target: return
+        try:
+            if jail_role and jail_role in target.roles: await target.remove_roles(jail_role, reason="Jail duration expired")
+            restore=[guild.get_role(rid) for rid in old_roles]
+            restore=[r for r in restore if r and r < guild.me.top_role]
+            if restore: await target.add_roles(*restore, reason="Jail duration expired")
+        except discord.HTTPException: pass
+        data=_load_json_config("jail_config.json", {}); data.get(str(guild.id), {}).pop(str(member.id), None); _save_json_file("jail_config.json", data)
+    asyncio.create_task(release())
+
+@bot.command(name="unjail")
+async def unjail(ctx, member: discord.Member, *, reason="released by moderator"):
+    if not (ctx.author.guild_permissions.manage_messages or role_ok(ctx.author, MUTE_ROLES)):
+        return await ctx.send(embed=make_embed("no permission", "you need Manage Messages or a configured moderation role."))
+    data=_load_json_config("jail_config.json", {}); saved=data.get(str(ctx.guild.id), {}).get(str(member.id))
+    if not saved: return await ctx.send(embed=make_embed("unjail", "that member isn't in the saved jail list."))
+    role=discord.utils.get(ctx.guild.roles, name="Jailed") or discord.utils.get(ctx.guild.roles, name="Jail")
+    try:
+        if role and role in member.roles: await member.remove_roles(role, reason=f"Unjailed by {ctx.author}: {reason}")
+        restore=[ctx.guild.get_role(rid) for rid in saved.get("roles", [])]
+        restore=[r for r in restore if r and r < ctx.guild.me.top_role]
+        if restore: await member.add_roles(*restore, reason=f"Unjailed by {ctx.author}: {reason}")
+    except discord.HTTPException:
+        return await ctx.send(embed=make_embed("unjail failed", "Discord denied the role change."))
+    data.get(str(ctx.guild.id), {}).pop(str(member.id), None); _save_json_file("jail_config.json", data)
+    await ctx.send(embed=make_embed("member unjailed", f"{member.mention} has been released.\n\n**Reason**\n{reason}"))
+
+@bot.command(name="moveall")
+@commands.has_permissions(administrator=True, move_members=True)
+async def moveall(ctx, channel: discord.VoiceChannel):
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        return await ctx.send(embed=make_embed("move all", "join a voice channel first."))
+    source=ctx.author.voice.channel; moved=0
+    for m in list(source.members):
+        try: await m.move_to(channel, reason=f"moveall by {ctx.author}"); moved+=1
+        except discord.HTTPException: pass
+    await ctx.send(embed=make_embed("members moved", f"Moved `{moved}` members from {source.mention} to {channel.mention}."))
+
+@bot.command(name="drag")
+@commands.has_permissions(move_members=True)
+async def drag(ctx, members: commands.Greedy[discord.Member], channel: discord.VoiceChannel):
+    moved=0
+    for m in members:
+        try: await m.move_to(channel, reason=f"drag by {ctx.author}"); moved+=1
+        except discord.HTTPException: pass
+    await ctx.send(embed=make_embed("members moved", f"Moved `{moved}` members to {channel.mention}."))
+
+@bot.command(name="stripstaff")
+@commands.has_permissions(administrator=True)
+async def stripstaff(ctx, member: discord.Member):
+    staff_ids=set(WARN_ROLES)|set(KICK_ROLES)|{BAN_ROLE}
+    roles=[r for r in member.roles if r.id in staff_ids and r < ctx.guild.me.top_role]
+    if not roles: return await ctx.send(embed=make_embed("strip staff", "no configured moderation roles found on that member."))
+    await member.remove_roles(*roles, reason=f"staff roles stripped by {ctx.author}")
+    await ctx.send(embed=make_embed("staff roles removed", f"Removed `{len(roles)}` configured moderation roles from {member.mention}."))
+
+@bot.command(name="clearinvites")
+@commands.has_permissions(manage_guild=True)
+async def clearinvites(ctx):
+    try: invites=await ctx.guild.invites()
+    except discord.HTTPException: return await ctx.send(embed=make_embed("clear invites failed", "I couldn't fetch server invites."))
+    deleted=0
+    for invite in invites:
+        try: await invite.delete(reason=f"clearinvites by {ctx.author}"); deleted+=1
+        except discord.HTTPException: pass
+    await ctx.send(embed=make_embed("invites cleared", f"Deleted `{deleted}` invites."))
+
+@bot.command(name="newmembers")
+async def newmembers(ctx, count: int = 10):
+    count=max(1,min(count,50))
+    members=sorted(ctx.guild.members, key=lambda m:m.joined_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:count]
+    lines=[f"`{i:02}` {m.mention} · <t:{int(m.joined_at.timestamp())}:R>" for i,m in enumerate(members,1) if m.joined_at]
+    await ctx.send(embed=make_embed("recently joined members", "\n".join(lines) or "no join dates available."))
+
+@bot.command(name="recentban")
+@commands.has_permissions(ban_members=True)
+async def recentban(ctx, count: int = 5, *, reason="recent join moderation"):
+    count=max(1,min(count,25)); now=datetime.now(timezone.utc); cutoff=now-timedelta(days=7)
+    candidates=[m for m in ctx.guild.members if m.joined_at and m.joined_at >= cutoff and m != ctx.author and m.top_role < ctx.author.top_role]
+    banned=0
+    for m in candidates[:count]:
+        try: await m.ban(reason=f"recentban by {ctx.author}: {reason}", delete_message_seconds=0); banned+=1
+        except discord.HTTPException: pass
+    await ctx.send(embed=make_embed("recent members banned", f"Banned `{banned}` members who joined in the last 7 days.\n\n**Reason**\n{reason}"))
+
+@bot.command(name="hide")
+@commands.has_permissions(manage_channels=True)
+async def hide(ctx, channel: discord.TextChannel = None, target: discord.Member | discord.Role = None):
+    channel=channel or ctx.channel; target=target or ctx.guild.default_role
+    ow=channel.overwrites_for(target); ow.view_channel=False
+    await channel.set_permissions(target, overwrite=ow, reason=f"hide by {ctx.author}")
+    await ctx.send(embed=make_embed("channel hidden", f"{channel.mention} is now hidden from {target.mention if isinstance(target, discord.Member) else target.name}."))
+
+@bot.command(name="unhide")
+@commands.has_permissions(manage_channels=True)
+async def unhide(ctx, channel: discord.TextChannel = None, target: discord.Member | discord.Role = None):
+    channel=channel or ctx.channel; target=target or ctx.guild.default_role
+    ow=channel.overwrites_for(target); ow.view_channel=None
+    await channel.set_permissions(target, overwrite=ow, reason=f"unhide by {ctx.author}")
+    await ctx.send(embed=make_embed("channel unhidden", f"Restored default visibility for {target.mention if isinstance(target, discord.Member) else target.name} in {channel.mention}."))
+
+@bot.group(name="thread", invoke_without_command=True)
+async def thread_group(ctx):
+    await ctx.send(embed=make_embed("thread commands", f"`{PREFIX}thread rename <thread> <name>`\n`{PREFIX}thread lock <thread> [reason]`\n`{PREFIX}thread unlock <thread> [reason]`\n`{PREFIX}thread add <thread> <member>`\n`{PREFIX}thread remove <thread> <member>`\n`{PREFIX}thread watch <thread>`\n`{PREFIX}thread watch list`"))
+
+@thread_group.command(name="rename")
+@commands.has_permissions(manage_threads=True)
+async def thread_rename(ctx, thread: discord.Thread, *, new_name: str):
+    await thread.edit(name=new_name, reason=f"thread renamed by {ctx.author}")
+    await ctx.send(embed=make_embed("thread renamed", f"Renamed thread to **{new_name}**."))
+
+@thread_group.command(name="lock")
+@commands.has_permissions(manage_threads=True)
+async def thread_lock(ctx, thread: discord.Thread, *, reason="locked by moderator"):
+    await thread.edit(locked=True, reason=f"{ctx.author}: {reason}")
+    await ctx.send(embed=make_embed("thread locked", f"{thread.mention}\n\n**Reason**\n{reason}"))
+
+@thread_group.command(name="unlock")
+@commands.has_permissions(manage_threads=True)
+async def thread_unlock(ctx, thread: discord.Thread, *, reason="unlocked by moderator"):
+    await thread.edit(locked=False, reason=f"{ctx.author}: {reason}")
+    await ctx.send(embed=make_embed("thread unlocked", f"{thread.mention}\n\n**Reason**\n{reason}"))
+
+@thread_group.command(name="add")
+@commands.has_permissions(manage_threads=True)
+async def thread_add(ctx, thread: discord.Thread, member: discord.Member):
+    await thread.add_user(member)
+    await ctx.send(embed=make_embed("thread member added", f"Added {member.mention} to {thread.mention}."))
+
+@thread_group.command(name="remove")
+@commands.has_permissions(manage_threads=True)
+async def thread_remove(ctx, thread: discord.Thread, member: discord.Member):
+    await thread.remove_user(member)
+    await ctx.send(embed=make_embed("thread member removed", f"Removed {member.mention} from {thread.mention}."))
+
+@thread_group.group(name="watch", invoke_without_command=True)
+@commands.has_permissions(manage_channels=True)
+async def thread_watch(ctx, thread: discord.Thread = None):
+    store=_load_json_config("thread_watch.json", {}); key=str(ctx.guild.id); store.setdefault(key, [])
+    if thread is None:
+        ids=store[key]; lines=[f"`{i+1:02}` <#{tid}>" for i,tid in enumerate(ids) if ctx.guild.get_thread(tid)]
+        return await ctx.send(embed=make_embed("watched threads", "\n".join(lines) or "no watched threads."))
+    if thread.id in store[key]: store[key].remove(thread.id); action="removed from"
+    else: store[key].append(thread.id); action="added to"
+    _save_json_file("thread_watch.json", store)
+    await ctx.send(embed=make_embed("thread watch", f"{thread.mention} {action} the watch list."))
+
+@thread_watch.command(name="list")
+@commands.has_permissions(manage_channels=True)
+async def thread_watch_list(ctx):
+    store=_load_json_config("thread_watch.json", {}); ids=store.get(str(ctx.guild.id), [])
+    lines=[f"`{i+1:02}` <#{tid}>" for i,tid in enumerate(ids) if ctx.guild.get_thread(int(tid))]
+    await ctx.send(embed=make_embed("watched threads", "\n".join(lines) or "no watched threads."))
+
+@bot.command(name="banpurge")
+@commands.has_permissions(manage_guild=True, ban_members=True)
+async def banpurge(ctx, seconds: int = 604800):
+    seconds=max(0,min(seconds,604800)); cfg=guild_cfg(ctx.guild.id); cfg["ban_delete_seconds"]=seconds; save_ultimate_config()
+    await ctx.send(embed=make_embed("ban purge setting", f"Bans will delete up to `{seconds}` seconds of message history when supported."))
+
+@bot.group(name="hardban", invoke_without_command=True)
+@commands.has_permissions(administrator=True, ban_members=True)
+async def hardban(ctx, user_id: int = None, *, reason="no reason provided"):
+    if user_id is None: return await ctx.send(embed=make_embed("hardban", f"usage: `{PREFIX}hardban <user ID> [reason]` or `{PREFIX}hardban list`."))
+    try: await ctx.guild.ban(discord.Object(id=user_id), reason=f"Hardban by {ctx.author}: {reason}", delete_message_seconds=0)
+    except discord.HTTPException: return await ctx.send(embed=make_embed("hardban failed", "Discord denied the ban."))
+    data=_load_json_config("hardbans.json", {}); data.setdefault(str(ctx.guild.id), {})[str(user_id)]={"reason":reason,"moderator":ctx.author.id,"time":int(time.time())}; _save_json_file("hardbans.json", data)
+    await ctx.send(embed=make_embed("hardban added", f"User `{user_id}` has been hardbanned.\n\n**Reason**\n{reason}"))
+
+@bot.command(name="hardbanlist", aliases=["hardban-list"])
+@commands.has_permissions(administrator=True)
+async def hardbanlist(ctx):
+    data=_load_json_config("hardbans.json", {}).get(str(ctx.guild.id), {})
+    lines=[f"`{uid}` · {entry.get('reason','No reason')}" for uid,entry in list(data.items())[-40:]]
+    await ctx.send(embed=make_embed("hardbanned users", "\n".join(lines) or "no hardbans recorded."))
+
+# Keep command directory/help metadata aligned with the added commands.
+CATEGORIES.extend([
+    ("Threads", ["thread", "thread rename", "thread lock", "thread unlock", "thread add", "thread remove", "thread watch"]),
+    ("Additional Moderation", ["tempban", "softban", "jail", "unjail", "timeoutlist", "stripstaff", "hardban", "hardbanlist", "banpurge"]),
+    ("Server Tools", ["moveall", "drag", "clearinvites", "newmembers", "recentban", "hide", "unhide"]),
+])
+COMMAND_INFO.update({
+    "tempban": ("Temporarily ban a member; the bot schedules an automatic unban while it remains online.", "tempban <member> <duration> [reason]", "tempban @user 2d repeated spam", ["tban"]),
+    "softban": ("Ban and immediately unban a member, optionally deleting recent message history.", "softban <member> [delete-seconds] [reason]", "softban @user 86400 spam", []),
+    "timeoutlist": ("List members currently timed out.", "timeoutlist", "timeoutlist", ["timeout-list"]),
+    "jail": ("Create/use a Jailed role, remove manageable roles, and schedule release.", "jail <member> [duration] [reason]", "jail @user 1h disruption", []),
+    "unjail": ("Release a member from the saved jail list and restore saved roles.", "unjail <member> [reason]", "unjail @user appeal accepted", []),
+    "moveall": ("Move everyone in your current voice channel to another voice channel.", "moveall <voice channel>", "moveall #General Voice", []),
+    "drag": ("Move specified members to a voice channel.", "drag <members...> <voice channel>", "drag @user #General Voice", []),
+    "stripstaff": ("Remove configured moderation roles from a member.", "stripstaff <member>", "stripstaff @user", []),
+    "clearinvites": ("Delete all server invites.", "clearinvites", "clearinvites", []),
+    "newmembers": ("List the most recently joined members.", "newmembers [count]", "newmembers 20", []),
+    "recentban": ("Ban a number of members who joined within the last seven days.", "recentban [count] [reason]", "recentban 5 raid", []),
+    "hide": ("Hide a channel from a member or @everyone.", "hide [channel] [member]", "hide #general @everyone", []),
+    "unhide": ("Restore default channel visibility for a member or @everyone.", "unhide [channel] [member]", "unhide #general @everyone", []),
+    "thread": ("Manage threads and forum posts.", "thread <subcommand>", "thread lock #thread", []),
+    "thread rename": ("Rename a thread.", "thread rename <thread> <new name>", "thread rename #discussion Updates", []),
+    "thread lock": ("Lock a thread or forum post.", "thread lock <thread> [reason]", "thread lock #discussion spam", []),
+    "thread unlock": ("Unlock a thread or forum post.", "thread unlock <thread> [reason]", "thread unlock #discussion reopened", []),
+    "thread add": ("Add a member to a thread.", "thread add <thread> <member>", "thread add #discussion @user", []),
+    "thread remove": ("Remove a member from a thread.", "thread remove <thread> <member>", "thread remove #discussion @user", []),
+    "thread watch": ("Toggle a thread in the saved watch list, or list watched threads.", "thread watch [thread]", "thread watch #discussion", []),
+    "banpurge": ("Set the configured default message deletion window for future bans.", "banpurge [seconds]", "banpurge 86400", []),
+    "hardban": ("Ban a user and record them in the hardban list.", "hardban <user ID> [reason]", "hardban 123456789012345678 ban evasion", []),
+    "hardbanlist": ("View users recorded in the hardban list.", "hardbanlist", "hardbanlist", ["hardban-list"]),
+})
+
+
+
+# =========================
+# Full supplied command-list expansion
+# =========================
+
+# Small persistence helpers used by management commands.
+def _guild_cfg_section(ctx, section):
+    cfg = guild_cfg(ctx.guild.id)
+    return cfg.setdefault(section, {})
+
+def _can_manage_messages(ctx):
+    return bool(ctx.guild and (ctx.author.guild_permissions.administrator or ctx.author.guild_permissions.manage_messages or any(r.id in WARN_ROLES for r in ctx.author.roles)))
+
+def _case_lookup(ctx, case_id):
+    for uid, entries in modlog_data[ctx.guild.id].items():
+        for idx, entry in enumerate(entries):
+            if str(entry.get("case_id", "")) == str(case_id) or str(entry.get("id", "")) == str(case_id):
+                return uid, idx, entry
+    return None
+
+@remind.command(name="list")
+async def remind_list(ctx):
+    data = _load_json_config("reminders.json", {})
+    items = data.get(str(ctx.author.id), [])
+    body = "\n".join(f"`{x.get('id')}` · <t:{int(x.get('due', 0))}:R> · {str(x.get('message',''))[:100]}" for x in items[:15]) or "You have no active reminders."
+    await ctx.send(embed=make_embed("your reminders", body))
+
+@remind.command(name="remove")
+async def remind_remove(ctx, reminder_id: int):
+    data = _load_json_config("reminders.json", {})
+    key = str(ctx.author.id); items = data.get(key, [])
+    kept = [x for x in items if int(x.get("id", 0)) != reminder_id]
+    if len(kept) == len(items):
+        return await ctx.send(embed=make_embed("reminders", "that reminder ID was not found."))
+    data[key] = kept; _save_json_file("reminders.json", data)
+    await ctx.send(embed=make_embed("reminders", f"removed reminder `{reminder_id}`. It will no longer be delivered if its task has not already started."))
+
+@bot.command(name="reminders")
+async def reminders_cmd(ctx):
+    await remind_list(ctx)
+
+# Thread watch list command omitted from the original list implementation.
+@bot.group(name="proof", invoke_without_command=True)
+@commands.has_permissions(manage_messages=True)
+async def proof(ctx):
+    await ctx.send(embed=make_embed("proof", f"usage: `{PREFIX}proof <set|add|list|view|remove> <case id> ...`"))
+
+@proof.command(name="set")
+@commands.has_permissions(manage_messages=True)
+async def proof_set(ctx, case_id: str, *, explanation: str):
+    found = _case_lookup(ctx, case_id)
+    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    uid, idx, entry = found; entry["proof"] = explanation[:1000]; save_modlogs()
+    await ctx.send(embed=make_embed("proof updated", f"saved proof explanation for case `{case_id}`."))
+
+@proof.command(name="add")
+@commands.has_permissions(manage_messages=True)
+async def proof_add(ctx, case_id: str, media_url: str):
+    found = _case_lookup(ctx, case_id)
+    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    uid, idx, entry = found; attachments = entry.setdefault("attachments", [])
+    if not media_url.startswith(("https://", "http://")): return await ctx.send(embed=make_embed("proof", "provide a valid http(s) media URL."))
+    attachments.append(media_url[:500]); entry["attachments"] = attachments[-10:]; save_modlogs()
+    await ctx.send(embed=make_embed("proof", f"added attachment to case `{case_id}`."))
+
+@proof.command(name="list")
+@commands.has_permissions(manage_messages=True)
+async def proof_list(ctx, case_id: str):
+    found = _case_lookup(ctx, case_id)
+    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    entry = found[2]; lines = [f"**Explanation:** {entry.get('proof','none')}"]
+    lines += [f"`{i}` {url}" for i, url in enumerate(entry.get("attachments", []), 1)]
+    await ctx.send(embed=make_embed(f"proof · case {case_id}", "\n".join(lines)))
+
+@proof.command(name="view")
+@commands.has_permissions(manage_messages=True)
+async def proof_view(ctx, case_id: str):
+    await proof_list(ctx, case_id)
+
+@proof.command(name="remove")
+@commands.has_permissions(manage_messages=True)
+async def proof_remove(ctx, case_id: str, index: int):
+    found = _case_lookup(ctx, case_id)
+    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    entry = found[2]; attachments = entry.get("attachments", [])
+    if index < 1 or index > len(attachments): return await ctx.send(embed=make_embed("proof", "attachment index not found."))
+    attachments.pop(index-1); save_modlogs(); await ctx.send(embed=make_embed("proof", f"removed attachment `{index}` from case `{case_id}`."))
+
+@history.command(name="view")
+@commands.has_permissions(manage_messages=True)
+async def history_view(ctx, case_id: str):
+    found = _case_lookup(ctx, case_id)
+    if not found: return await ctx.send(embed=make_embed("history", "case ID not found."))
+    uid, idx, entry = found
+    await ctx.send(embed=make_embed(f"case {case_id}", f"**Member:** <@{uid}>\n**Action:** {entry.get('action','UNKNOWN')}\n**Reason:** {entry.get('reason','No reason provided')}\n**Moderator:** <@{entry.get('moderator_id',0)}>\n**Time:** <t:{int(entry.get('timestamp',time.time()))}:F>"))
+
+@history.command(name="remove")
+@commands.has_permissions(manage_messages=True)
+async def history_remove(ctx, member: discord.Member, case_id: str):
+    if not ctx.author.guild_permissions.administrator and not any(r.id in WARN_ROLES for r in ctx.author.roles): return
+    entries = modlog_data[ctx.guild.id].get(member.id, [])
+    idx = next((i for i, entry in enumerate(entries) if str(entry.get("case_id", "")) == str(case_id)), -1)
+    if idx < 0:
+        try: idx = int(case_id) - 1
+        except ValueError: idx = -1
+    if idx < 0 or idx >= len(entries): return await ctx.send(embed=make_embed("history", "case not found for that member."))
+    entries.pop(idx); save_modlogs(); await ctx.send(embed=make_embed("history", f"removed case `{case_id}` for {member.mention}."))
+
+@history.command(name="removeall")
+@commands.has_permissions(administrator=True)
+async def history_removeall(ctx, member: discord.Member):
+    modlog_data[ctx.guild.id].pop(member.id, None); save_modlogs()
+    warning_data[ctx.guild.id].pop(member.id, None)
+    await ctx.send(embed=make_embed("history", f"cleared stored punishment history for {member.mention}."))
+
+
+@mute.command(name="list")
+@commands.has_permissions(moderate_members=True)
+async def timeout_list_sub(ctx):
+    members=[m for m in ctx.guild.members if m.timed_out_until and m.timed_out_until > discord.utils.utcnow()]
+    body="\n".join(f"{m.mention} · <t:{int(m.timed_out_until.timestamp())}:R>" for m in members[:30]) or "No members are currently timed out."
+    await ctx.send(embed=make_embed("timed out members", body))
+
+@hardban.command(name="list")
+@commands.has_permissions(administrator=True)
+async def hardban_list_sub(ctx):
+    await hardbanlist(ctx)
+
+@modnote.command(name="add")
+async def notes_add_sub(ctx, member: discord.Member, *, note: str):
+    await modnote(ctx, "add", member, note=note)
+
+@modnote.command(name="clear")
+async def notes_clear_sub(ctx, member: discord.Member):
+    await modnote(ctx, "clear", member)
+
+@modnote.command(name="list")
+async def notes_list_sub(ctx, member: discord.Member):
+    await modnote(ctx, "list", member)
+
+@modnote.command(name="remove")
+async def notes_remove_sub(ctx, member: discord.Member, note_id: int):
+    if not (ctx.author.guild_permissions.administrator or any(r.id in WARN_ROLES for r in ctx.author.roles)): return
+    cfg=guild_cfg(ctx.guild.id); notes=cfg.setdefault("notes",{}).setdefault(str(member.id),[])
+    if note_id < 1 or note_id > len(notes): return await ctx.send(embed=make_embed("mod notes", "note ID not found."))
+    notes.pop(note_id-1); save_ultimate_config(); await ctx.send(embed=make_embed("mod notes", f"removed note `{note_id}` for {member.mention}."))
+
+@bot.command(name="reason")
+@commands.has_permissions(manage_messages=True)
+async def reason_cmd(ctx, case_id: str, *, new_reason: str):
+    found=_case_lookup(ctx,case_id)
+    if not found: return await ctx.send(embed=make_embed("case reason", "case ID not found."))
+    uid,idx,entry=found; entry["reason"]=new_reason[:500]; entry["reason_updated_by"]=ctx.author.id; entry["reason_updated_at"]=int(time.time()); save_modlogs()
+    await ctx.send(embed=make_embed("case reason updated", f"updated reason for case `{case_id}`."))
+
+@bot.command(name="setup")
+@commands.has_permissions(administrator=True, manage_channels=True, manage_roles=True)
+async def setup_moderation(ctx):
+    log_channel=discord.utils.get(ctx.guild.text_channels,name="mod-logs")
+    if log_channel is None: log_channel=await ctx.guild.create_text_channel("mod-logs", reason=f"moderation setup by {ctx.author}")
+    muted=discord.utils.get(ctx.guild.roles,name="Muted")
+    if muted is None: muted=await ctx.guild.create_role(name="Muted",reason=f"moderation setup by {ctx.author}")
+    for channel in ctx.guild.text_channels:
+        try:
+            ow=channel.overwrites_for(muted); ow.send_messages=False; ow.add_reactions=False
+            await channel.set_permissions(muted,overwrite=ow,reason="moderation setup")
+        except (discord.Forbidden,discord.HTTPException): pass
+    cfg=guild_cfg(ctx.guild.id); cfg["modlog_channel"]=log_channel.id; cfg["muted_role"]=muted.id; save_ultimate_config()
+    await ctx.send(embed=make_embed("moderation setup complete", f"**Mod logs:** {log_channel.mention}\n**Muted role:** {muted.mention}"))
+
+@bot.command(name="caselog")
+@commands.has_permissions(manage_messages=True)
+async def caselog(ctx, case_id: str):
+    await history_view(ctx, case_id)
+
+@bot.command(name="moderationhistory")
+@commands.has_permissions(manage_messages=True)
+async def moderationhistory(ctx, member: discord.Member, command: str = None):
+    rows=[]
+    for uid, entries in modlog_data[ctx.guild.id].items():
+        for e in entries:
+            if int(e.get("moderator_id",0)) == member.id and (not command or e.get("action","").lower() == command.lower()):
+                rows.append((int(e.get("timestamp",0)), uid, e))
+    rows.sort(reverse=True); body="\n".join(f"<@{uid}> · **{e.get('action')}** · {e.get('reason','')} · <t:{ts}:R>" for ts,uid,e in rows[:15]) or "No matching moderation actions."
+    await ctx.send(embed=make_embed(f"moderation history · {member}", body))
+
+@bot.command(name="jaillist")
+@commands.has_permissions(manage_messages=True)
+async def jaillist(ctx):
+    data = _load_json_config("jail_config.json", {}).get(str(ctx.guild.id), {})
+    body = "\n".join(f"<@{uid}> · {info.get('reason','No reason')}" for uid, info in data.items()) or "No saved jailed members."
+    await ctx.send(embed=make_embed("jailed members", body[:4000]))
+
+@bot.group(name="temprole", invoke_without_command=True)
+@commands.has_permissions(manage_roles=True)
+async def temprole(ctx, member: discord.Member = None, duration: str = None, role: discord.Role = None):
+    if not member or not duration or not role: return await ctx.send(embed=make_embed("temprole", f"usage: `{PREFIX}temprole <member> <duration> <role>`"))
+    seconds = parse_duration(duration)
+    if not seconds or seconds < 1: return await ctx.send(embed=make_embed("temprole", "duration example: `30m`, `2h`, `3d`."))
+    if role >= ctx.guild.me.top_role or (not ctx.author.guild_permissions.administrator and role >= ctx.author.top_role): return await ctx.send(embed=make_embed("temprole", "that role is too high."))
+    await member.add_roles(role, reason=f"temporary role by {ctx.author}")
+    data = _load_json_config("temprole.json", {}); gid=str(ctx.guild.id); data.setdefault(gid,[]).append({"member":member.id,"role":role.id,"due":int(time.time()+seconds)}) ; _save_json_file("temprole.json",data)
+    async def remove_later():
+        await asyncio.sleep(seconds)
+        try: await member.remove_roles(role, reason="temporary role expired")
+        except (discord.Forbidden, discord.HTTPException): pass
+        d=_load_json_config("temprole.json",{}); d[gid]=[x for x in d.get(gid,[]) if not (x.get("member")==member.id and x.get("role")==role.id)]; _save_json_file("temprole.json",d)
+    bot.loop.create_task(remove_later())
+    await ctx.send(embed=make_embed("temporary role", f"gave {role.mention} to {member.mention} until <t:{int(time.time()+seconds)}:R>."))
+
+@temprole.command(name="list")
+@commands.has_permissions(manage_roles=True)
+async def temprole_list(ctx):
+    data=_load_json_config("temprole.json",{}).get(str(ctx.guild.id),[])
+    body="\n".join(f"<@{x['member']}> · <@&{x['role']}> · <t:{int(x['due'])}:R>" for x in data) or "No temporary roles saved."
+    await ctx.send(embed=make_embed("temporary roles", body[:4000]))
+
+@bot.group(name="stickyrole", invoke_without_command=True)
+@commands.check(lambda ctx: bool(ctx.guild and ctx.author.id == ctx.guild.owner_id))
+async def stickyrole(ctx):
+    await ctx.send(embed=make_embed("stickyrole", f"usage: `{PREFIX}stickyrole <add|remove|list> <member> <role>`"))
+
+@stickyrole.command(name="add")
+@commands.check(lambda ctx: bool(ctx.guild and ctx.author.id == ctx.guild.owner_id))
+async def stickyrole_add(ctx, member: discord.Member, role: discord.Role):
+    d=_load_json_config("stickyrole.json",{}); g=d.setdefault(str(ctx.guild.id),{}); g[str(member.id)]=sorted(set(g.get(str(member.id),[])+[role.id])); _save_json_file("stickyrole.json",d)
+    await ctx.send(embed=make_embed("sticky role", f"will reapply {role.mention} to {member.mention} if they rejoin."))
+
+@stickyrole.command(name="remove")
+@commands.check(lambda ctx: bool(ctx.guild and ctx.author.id == ctx.guild.owner_id))
+async def stickyrole_remove(ctx, member: discord.Member, role: discord.Role):
+    d=_load_json_config("stickyrole.json",{}); g=d.setdefault(str(ctx.guild.id),{}); g[str(member.id)]=[x for x in g.get(str(member.id),[]) if int(x)!=role.id]; _save_json_file("stickyrole.json",d)
+    await ctx.send(embed=make_embed("sticky role", f"removed sticky-role setting for {member.mention} / {role.mention}."))
+
+@stickyrole.command(name="list")
+@commands.check(lambda ctx: bool(ctx.guild and ctx.author.id == ctx.guild.owner_id))
+async def stickyrole_list(ctx):
+    d=_load_json_config("stickyrole.json",{}).get(str(ctx.guild.id),{}); body="\n".join(f"<@{uid}> → {', '.join(f'<@&{rid}>' for rid in roles)}" for uid,roles in d.items()) or "No sticky roles configured."
+    await ctx.send(embed=make_embed("sticky roles", body[:4000]))
+
+@bot.group(name="restrictcommand", aliases=["restrictcmd"], invoke_without_command=True)
+@commands.has_guild_permissions(manage_guild=True)
+async def restrictcommand(ctx, command_name: str = None, role: discord.Role = None):
+    if not command_name or not role: return await ctx.send(embed=make_embed("restrict command", f"usage: `{PREFIX}restrictcommand add <command> <role>`"))
+    d=_load_json_config("restricted_commands.json",{}); d.setdefault(str(ctx.guild.id),{}).setdefault(command_name.lower(),[]).append(role.id); _save_json_file("restricted_commands.json",d)
+    await ctx.send(embed=make_embed("restrict command", f"{role.mention} can now use `{command_name}` as an allowed role."))
+
+@restrictcommand.command(name="add")
+@commands.has_guild_permissions(manage_guild=True)
+async def restrictcommand_add(ctx, command_name: str, role: discord.Role):
+    d=_load_json_config("restricted_commands.json",{}); items=d.setdefault(str(ctx.guild.id),{}).setdefault(command_name.lower(),[])
+    if role.id not in items: items.append(role.id)
+    _save_json_file("restricted_commands.json",d); await ctx.send(embed=make_embed("restrict command", f"added {role.mention} for `{command_name}`."))
+
+@restrictcommand.command(name="remove")
+@commands.has_guild_permissions(manage_guild=True)
+async def restrictcommand_remove(ctx, command_name: str, role: discord.Role):
+    d=_load_json_config("restricted_commands.json",{}); items=d.setdefault(str(ctx.guild.id),{}).get(command_name.lower(),[]); d[str(ctx.guild.id)][command_name.lower()]=[x for x in items if int(x)!=role.id]; _save_json_file("restricted_commands.json",d)
+    await ctx.send(embed=make_embed("restrict command", f"removed {role.mention} from `{command_name}` restrictions."))
+
+@restrictcommand.command(name="list")
+@commands.has_guild_permissions(manage_guild=True)
+async def restrictcommand_list(ctx):
+    d=_load_json_config("restricted_commands.json",{}).get(str(ctx.guild.id),{}); body="\n".join(f"`{cmd}`: {', '.join(f'<@&{rid}>' for rid in roles)}" for cmd,roles in d.items()) or "No restricted commands configured."
+    await ctx.send(embed=make_embed("restricted commands", body[:4000]))
+
+@restrictcommand.command(name="reset")
+@commands.has_guild_permissions(manage_guild=True)
+async def restrictcommand_reset(ctx):
+    d=_load_json_config("restricted_commands.json",{}); d[str(ctx.guild.id)]={}; _save_json_file("restricted_commands.json",d); await ctx.send(embed=make_embed("restricted commands", "cleared all command restrictions."))
+
+@bot.group(name="nuke", invoke_without_command=True)
+@commands.has_permissions(administrator=True)
+async def nuke(ctx):
+    clone = await ctx.channel.clone(reason=f"channel cloned by {ctx.author}")
+    await clone.edit(position=ctx.channel.position)
+    await ctx.channel.delete(reason=f"channel nuked by {ctx.author}")
+    await clone.send(embed=make_embed("channel nuked", f"channel recreated by {ctx.author.mention}."))
+
+@slowmode.command(name="on")
+@commands.has_permissions(manage_channels=True)
+async def slowmode_on(ctx, channel: discord.TextChannel = None, delay: str = "5s"):
+    channel=channel or ctx.channel; seconds=parse_duration(delay)
+    if seconds is None: 
+        try: seconds=int(delay)
+        except ValueError: seconds=None
+    if seconds is None or not 0 <= seconds <= 21600: return await ctx.send(embed=make_embed("slowmode", "delay must be seconds or a duration like `10s`."))
+    await channel.edit(slowmode_delay=seconds); await ctx.send(embed=make_embed("slowmode", f"enabled slowmode on {channel.mention} (`{seconds}s`)."))
+
+@slowmode.command(name="off")
+@commands.has_permissions(manage_channels=True)
+async def slowmode_off(ctx, channel: discord.TextChannel = None):
+    channel=channel or ctx.channel; await channel.edit(slowmode_delay=0); await ctx.send(embed=make_embed("slowmode", f"disabled slowmode on {channel.mention}."))
+
+@bot.command(name="untimeout", aliases=["untimeoutmember"])
+@commands.has_permissions(moderate_members=True)
+async def untimeout_cmd(ctx, member: discord.Member, *, reason="No reason provided"):
+    await member.timeout(None, reason=f"{ctx.author}: {reason}"); record_modlog(ctx.guild, member, "UNTIMEOUT", ctx.author, reason)
+    await ctx.send(embed=make_embed("timeout removed", f"removed timeout for {member.mention}."))
+
+@bot.command(name="imute")
+@commands.has_permissions(moderate_members=True)
+async def imute(ctx, member: discord.Member, *, reason="No reason provided"):
+    ow=ctx.channel.overwrites_for(member); ow.attach_files=False; ow.embed_links=False; await ctx.channel.set_permissions(member, overwrite=ow, reason=reason)
+    record_modlog(ctx.guild, member, "IMUTE", ctx.author, reason); await ctx.send(embed=make_embed("imute", f"disabled file attachments and embeds for {member.mention} in {ctx.channel.mention}."))
+
+@bot.command(name="iunmute")
+@commands.has_permissions(moderate_members=True)
+async def iunmute(ctx, member: discord.Member, *, reason="No reason provided"):
+    ow=ctx.channel.overwrites_for(member); ow.attach_files=None; ow.embed_links=None; await ctx.channel.set_permissions(member, overwrite=ow, reason=reason)
+    record_modlog(ctx.guild, member, "IUNMUTE", ctx.author, reason); await ctx.send(embed=make_embed("iunmute", f"restored file attachments and embeds for {member.mention} in {ctx.channel.mention}."))
+
+@bot.command(name="rmute")
+@commands.has_permissions(moderate_members=True)
+async def rmute(ctx, member: discord.Member, *, reason="No reason provided"):
+    ow=ctx.channel.overwrites_for(member); ow.add_reactions=False; ow.use_external_emojis=False; await ctx.channel.set_permissions(member, overwrite=ow, reason=reason)
+    record_modlog(ctx.guild, member, "RMUTE", ctx.author, reason); await ctx.send(embed=make_embed("rmute", f"disabled reactions and external emojis for {member.mention} in {ctx.channel.mention}."))
+
+@bot.command(name="runmute")
+@commands.has_permissions(moderate_members=True)
+async def runmute(ctx, member: discord.Member, *, reason="No reason provided"):
+    ow=ctx.channel.overwrites_for(member); ow.add_reactions=None; ow.use_external_emojis=None; await ctx.channel.set_permissions(member, overwrite=ow, reason=reason)
+    record_modlog(ctx.guild, member, "RUNMUTE", ctx.author, reason); await ctx.send(embed=make_embed("runmute", f"restored reactions and external emojis for {member.mention} in {ctx.channel.mention}."))
+
+@bot.command(name="rename")
+@commands.has_permissions(manage_nicknames=True)
+async def rename_cmd(ctx, member: discord.Member, *, newnick: str):
+    if not target_ok(ctx, member): return await ctx.send(embed=make_embed("rename", "you can't rename that member."))
+    await member.edit(nick=newnick[:32], reason=f"renamed by {ctx.author}"); await ctx.send(embed=make_embed("nickname updated", f"set {member.mention}'s nickname to **{newnick[:32]}**."))
+
+@bot.group(name="forcenickname", invoke_without_command=True)
+@commands.has_guild_permissions(manage_guild=True, manage_nicknames=True)
+async def forcenickname(ctx, member: discord.Member = None, *, nickname: str = None):
+    if member is None or not nickname: return await ctx.send(embed=make_embed("forced nickname", f"usage: `{PREFIX}forcenickname <member> <nickname>` or `{PREFIX}forcenickname list`."))
+    d=_load_json_config("forced_nicknames.json",{}); d.setdefault(str(ctx.guild.id),{})[str(member.id)]=nickname[:32]; _save_json_file("forced_nicknames.json",d)
+    await member.edit(nick=nickname[:32], reason=f"forced nickname set by {ctx.author}"); await ctx.send(embed=make_embed("forced nickname", f"saved nickname for {member.mention}."))
+
+@forcenickname.command(name="list")
+@commands.has_guild_permissions(manage_guild=True, manage_nicknames=True)
+async def forcenickname_list(ctx):
+    d=_load_json_config("forced_nicknames.json",{}).get(str(ctx.guild.id),{}); body="\n".join(f"<@{uid}> · `{nick}`" for uid,nick in d.items()) or "No forced nicknames saved."
+    await ctx.send(embed=make_embed("forced nicknames", body[:4000]))
+
+@bot.command(name="talk")
+@commands.has_permissions(manage_channels=True)
+async def talk(ctx, channel: discord.TextChannel, role: discord.Role):
+    ow=channel.overwrites_for(role); ow.view_channel=True; ow.send_messages=True; await channel.set_permissions(role, overwrite=ow, reason=f"talk enabled by {ctx.author}")
+    await ctx.send(embed=make_embed("channel access", f"allowed {role.mention} to view and talk in {channel.mention}."))
+
+@bot.command(name="revokefiles")
+@commands.has_permissions(manage_channels=True)
+async def revokefiles(ctx, setting: str = None, channel: discord.TextChannel = None):
+    if setting not in ("on", "off"): return await ctx.send(embed=make_embed("revokefiles", f"usage: `{PREFIX}revokefiles <on|off> [channel]`."))
+    channel=channel or ctx.channel; ow=channel.overwrites_for(ctx.guild.default_role); value=False if setting == "on" else None
+    ow.attach_files=value; ow.embed_links=value; await channel.set_permissions(ctx.guild.default_role, overwrite=ow, reason=f"revokefiles {setting} by {ctx.author}")
+    await ctx.send(embed=make_embed("revokefiles", f"updated file/embed permissions in {channel.mention}."))
+
+@bot.command(name="naughty")
+@commands.has_permissions(manage_channels=True)
+async def naughty(ctx, channel: discord.TextChannel = None):
+    channel=channel or ctx.channel
+    if not hasattr(channel, "nsfw"): return await ctx.send(embed=make_embed("naughty", "that channel does not support NSFW settings."))
+    await channel.edit(nsfw=True); await ctx.send(embed=make_embed("naughty", f"marked {channel.mention} as NSFW for 30 seconds.")); await asyncio.sleep(30)
+    try: await channel.edit(nsfw=False)
+    except (discord.Forbidden, discord.HTTPException): pass
+
+@bot.command(name="setupmute")
+@commands.has_guild_permissions(manage_guild=True, manage_channels=True)
+async def setupmute(ctx):
+    role=discord.utils.get(ctx.guild.roles, name="Muted")
+    if role is None: role=await ctx.guild.create_role(name="Muted", reason=f"mute setup by {ctx.author}")
+    changed=0
+    for channel in ctx.guild.channels:
+        try:
+            ow=channel.overwrites_for(role)
+            if isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.Thread)):
+                ow.send_messages=False; ow.add_reactions=False
+            if isinstance(channel, discord.VoiceChannel): ow.speak=False
+            await channel.set_permissions(role, overwrite=ow, reason="muted role setup"); changed+=1
+        except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("mute setup", f"configured {role.mention} across `{changed}` channels."))
+
+@bot.command(name="permissions")
+@commands.has_guild_permissions(manage_roles=True)
+async def permissions_cmd(ctx, member: discord.Member = None, channel: discord.TextChannel = None):
+    member=member or ctx.author; channel=channel or ctx.channel; perms=channel.permissions_for(member)
+    names=[name.replace('_',' ').title() for name,value in perms if value]
+    await ctx.send(embed=make_embed(f"permissions · {member.display_name}", f"**Channel:** {channel.mention}\n" + (", ".join(names[:60]) or "No permissions")))
+
+@bot.group(name="unbanall", invoke_without_command=True)
+@commands.check(lambda ctx: bool(ctx.guild and ctx.author.id == ctx.guild.owner_id))
+async def unbanall(ctx):
+    data=_load_json_config("unbanall_tasks.json",{}); data[str(ctx.guild.id)]={"started":int(time.time()),"cancel":False}; _save_json_file("unbanall_tasks.json",data)
+    bans=[entry async for entry in ctx.guild.bans()]; unbanned=0
+    for entry in bans:
+        state=_load_json_config("unbanall_tasks.json",{}).get(str(ctx.guild.id),{})
+        if state.get("cancel"): break
+        try: await ctx.guild.unban(entry.user, reason=f"unbanall by server owner {ctx.author}"); unbanned+=1
+        except (discord.Forbidden, discord.HTTPException): pass
+        await asyncio.sleep(1)
+    data=_load_json_config("unbanall_tasks.json",{}); data.pop(str(ctx.guild.id),None); _save_json_file("unbanall_tasks.json",data)
+    await ctx.send(embed=make_embed("unbanall", f"unbanned `{unbanned}` users."))
+
+@unbanall.command(name="cancel")
+@commands.check(lambda ctx: bool(ctx.guild and ctx.author.id == ctx.guild.owner_id))
+async def unbanall_cancel(ctx):
+    data=_load_json_config("unbanall_tasks.json",{}); task=data.setdefault(str(ctx.guild.id),{}); task["cancel"]=True; _save_json_file("unbanall_tasks.json",data)
+    await ctx.send(embed=make_embed("unbanall", "cancellation requested."))
+
+@bot.command(name="roleicon")
+@commands.has_permissions(manage_roles=True)
+async def roleicon(ctx, role: discord.Role, url: str):
+    if not hasattr(role, "edit") or not hasattr(role, "display_icon"):
+        return await ctx.send(embed=make_embed("role icon", "this Discord server/API configuration may not support role icons."))
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200: return await ctx.send(embed=make_embed("role icon", "could not download that image URL."))
+                data=await resp.read()
+        await role.edit(display_icon=data, reason=f"role icon set by {ctx.author}")
+    except (discord.HTTPException, discord.Forbidden, aiohttp.ClientError, ValueError):
+        return await ctx.send(embed=make_embed("role icon", "could not set that role icon; check the URL, role position, and server boost requirements."))
+    await ctx.send(embed=make_embed("role icon", f"updated icon for {role.mention}."))
+
+@bot.command(name="rolementionable")
+@commands.has_permissions(manage_roles=True)
+async def rolementionable(ctx, role: discord.Role):
+    await role.edit(mentionable=not role.mentionable, reason=f"role mentionable toggled by {ctx.author}")
+    await ctx.send(embed=make_embed("role mentionable", f"{role.mention} mentionable: **{not role.mentionable}**."))
+
+@bot.command(name="rolehoist")
+@commands.has_permissions(manage_roles=True)
+async def rolehoist(ctx, role: discord.Role):
+    await role.edit(hoist=not role.hoist, reason=f"role hoist toggled by {ctx.author}")
+    await ctx.send(embed=make_embed("role hoist", f"{role.mention} hoisted: **{not role.hoist}**."))
+
+@bot.command(name="rolecolor", aliases=["rolecolour"])
+@commands.has_permissions(manage_roles=True)
+async def rolecolor(ctx, role: discord.Role, colour: str):
+    raw=colour.lstrip("#")
+    try: value=int(raw,16)
+    except ValueError: return await ctx.send(embed=make_embed("role color", "use a hex color like `#efcead`."))
+    if len(raw) != 6: return await ctx.send(embed=make_embed("role color", "use a six-digit hex color like `#efcead`."))
+    await role.edit(colour=discord.Colour(value), reason=f"role color set by {ctx.author}"); await ctx.send(embed=make_embed("role color", f"updated {role.mention} to `#{raw.lower()}`."))
+
+@bot.command(name="rolecreate")
+@commands.has_permissions(manage_roles=True)
+async def rolecreate(ctx, *, name: str):
+    role=await ctx.guild.create_role(name=name[:100], reason=f"role created by {ctx.author}"); await ctx.send(embed=make_embed("role created", f"created {role.mention}."))
+
+@bot.command(name="roleedit")
+@commands.has_permissions(manage_roles=True)
+async def roleedit(ctx, role: discord.Role, *, name: str):
+    old=role.name; await role.edit(name=name[:100], reason=f"role renamed by {ctx.author}"); await ctx.send(embed=make_embed("role edited", f"renamed `{old}` to {role.mention}."))
+
+@bot.command(name="rolehumans")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def rolehumans(ctx, role: discord.Role):
+    count=0
+    for member in ctx.guild.members:
+        if not member.bot and role not in member.roles:
+            try: await member.add_roles(role, reason=f"bulk role by {ctx.author}"); count+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("role humans", f"added {role.mention} to `{count}` humans."))
+
+@bot.command(name="rolehumansremove")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def rolehumansremove(ctx, role: discord.Role):
+    count=0
+    for member in ctx.guild.members:
+        if not member.bot and role in member.roles:
+            try: await member.remove_roles(role, reason=f"bulk role removal by {ctx.author}"); count+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("role humans", f"removed {role.mention} from `{count}` humans."))
+
+@bot.command(name="rolebots")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def rolebots(ctx, role: discord.Role):
+    count=0
+    for member in ctx.guild.members:
+        if member.bot and role not in member.roles:
+            try: await member.add_roles(role, reason=f"bulk bot role by {ctx.author}"); count+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("role bots", f"added {role.mention} to `{count}` bots."))
+
+@bot.command(name="rolebotsremove")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def rolebotsremove(ctx, role: discord.Role):
+    count=0
+    for member in ctx.guild.members:
+        if member.bot and role in member.roles:
+            try: await member.remove_roles(role, reason=f"bulk bot role removal by {ctx.author}"); count+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("role bots", f"removed {role.mention} from `{count}` bots."))
+
+@bot.command(name="dump")
+@commands.has_permissions(manage_roles=True)
+async def dump(ctx, role: discord.Role):
+    members=[m for m in ctx.guild.members if role in m.roles]
+    data="\n".join(f"{m} ({m.id})" for m in members) or "No members have that role."
+    file=discord.File(io.BytesIO(data.encode()), filename=f"role-{role.id}-members.txt")
+    await ctx.send(embed=make_embed("role dump", f"exported `{len(members)}` members with {role.mention}."), file=file)
+
+@lockdown.command(name="all")
+@commands.has_permissions(manage_channels=True)
+async def lockdown_all(ctx, *, reason="Server lockdown"):
+    ctx.command=bot.get_command("lockdown"); await lockdown(ctx, None, reason=reason)
+
+@lockdown.command(name="role")
+@commands.has_guild_permissions(manage_guild=True)
+async def lockdown_role(ctx, role: discord.Role):
+    cfg=_guild_cfg_section(ctx,"lockdown"); cfg["role_id"]=role.id; save_ultimate_config(); await ctx.send(embed=make_embed("lockdown role", f"saved {role.mention} as the lockdown role."))
+
+@lockdown.group(name="ignore", invoke_without_command=True)
+@commands.has_guild_permissions(manage_guild=True)
+async def lockdown_ignore(ctx):
+    ignored=_guild_cfg_section(ctx,"lockdown").get("ignored",[]); body="\n".join(f"<#{cid}>" for cid in ignored) or "No ignored channels."
+    await ctx.send(embed=make_embed("lockdown ignored channels", body))
+
+@lockdown_ignore.command(name="add")
+@commands.has_guild_permissions(manage_guild=True)
+async def lockdown_ignore_add(ctx, channel: discord.TextChannel):
+    cfg=_guild_cfg_section(ctx,"lockdown"); cfg["ignored"]=list(set(cfg.get("ignored",[])+[channel.id])); save_ultimate_config(); await ctx.send(embed=make_embed("lockdown", f"added {channel.mention} to the ignore list."))
+
+@lockdown_ignore.command(name="remove")
+@commands.has_guild_permissions(manage_guild=True)
+async def lockdown_ignore_remove(ctx, channel: discord.TextChannel):
+    cfg=_guild_cfg_section(ctx,"lockdown"); cfg["ignored"]=[x for x in cfg.get("ignored",[]) if int(x)!=channel.id]; save_ultimate_config(); await ctx.send(embed=make_embed("lockdown", f"removed {channel.mention} from the ignore list."))
+
+@lockdown_ignore.command(name="list")
+@commands.has_guild_permissions(manage_guild=True)
+async def lockdown_ignore_list(ctx):
+    await lockdown_ignore(ctx)
+
+@unlock.command(name="all")
+@commands.has_permissions(manage_channels=True)
+async def unlock_all(ctx):
+    await unlockall(ctx)
+
+@purge.command(name="links")
+@commands.has_permissions(manage_messages=True)
+async def purge_links(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: bool(re.search(r"https?://|www\.", m.content, re.I)), search)
+
+@purge.command(name="webhooks")
+@commands.has_permissions(manage_messages=True)
+async def purge_webhooks(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: m.webhook_id is not None, search)
+
+@purge.command(name="humans")
+@commands.has_permissions(manage_messages=True)
+async def purge_humans(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: not m.author.bot and m.author != ctx.author, search)
+
+@purge.command(name="bots")
+@commands.has_permissions(manage_messages=True)
+async def purge_bots(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: m.author.bot, search)
+
+@purge.command(name="embeds")
+@commands.has_permissions(manage_messages=True)
+async def purge_embeds(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: bool(m.embeds), search)
+
+@purge.command(name="files")
+@commands.has_permissions(manage_messages=True)
+async def purge_files(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: bool(m.attachments), search)
+
+@purge.command(name="images")
+@commands.has_permissions(manage_messages=True)
+async def purge_images(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: any(a.content_type and a.content_type.startswith("image/") for a in m.attachments) or bool(re.search(r"\.(png|jpe?g|gif|webp)(?:\?|$)", m.content, re.I)), search)
+
+@purge.command(name="stickers")
+@commands.has_permissions(manage_messages=True)
+async def purge_stickers(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: bool(m.stickers), search)
+
+@purge.command(name="reactions")
+@commands.has_permissions(manage_messages=True)
+async def purge_reactions(ctx, search: int = 100):
+    deleted=0
+    async for msg in ctx.channel.history(limit=max(1,min(search,500))):
+        if msg.reactions:
+            try:
+                await msg.clear_reactions(); deleted+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("purge reactions", f"cleared reactions on `{deleted}` messages."), delete_after=5)
+
+@purge.command(name="mentions")
+@commands.has_permissions(manage_messages=True)
+async def purge_mentions(ctx, member: discord.Member, search: int = 100):
+    await _purge_filter(ctx, lambda m: member in m.mentions, search)
+
+@purge.command(name="contains")
+@commands.has_permissions(manage_messages=True)
+async def purge_contains(ctx, *, substring: str):
+    await _purge_filter(ctx, lambda m: substring.lower() in m.content.lower(), 100)
+
+@purge.command(name="startswith")
+@commands.has_permissions(manage_messages=True)
+async def purge_startswith(ctx, *, substring: str):
+    await _purge_filter(ctx, lambda m: m.content.lower().startswith(substring.lower()), 100)
+
+@purge.command(name="endswith")
+@commands.has_permissions(manage_messages=True)
+async def purge_endswith(ctx, *, substring: str):
+    await _purge_filter(ctx, lambda m: m.content.lower().endswith(substring.lower()), 100)
+
+@purge.command(name="emoji")
+@commands.has_permissions(manage_messages=True)
+async def purge_emoji(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: bool(re.search(r"<a?:[a-zA-Z0-9_]+:\d+>|[\U0001F300-\U0001FAFF]",m.content)), search)
+
+@purge.command(name="emotes")
+@commands.has_permissions(manage_messages=True)
+async def purge_emotes(ctx, search: int = 100):
+    await purge_emoji(ctx, search)
+
+@purge.command(name="activity")
+@commands.has_permissions(manage_messages=True)
+async def purge_activity(ctx, search: int = 100):
+    await _purge_filter(ctx, lambda m: m.type != discord.MessageType.default, search)
+
+@purge.command(name="before")
+@commands.has_permissions(manage_messages=True)
+async def purge_before(ctx, message_id: str):
+    try: mid=int(re.search(r"\d{15,22}",message_id).group())
+    except (AttributeError, ValueError): return await ctx.send(embed=make_embed("purge", "provide a message ID or message link."))
+    ref=await ctx.channel.fetch_message(mid); deleted=await ctx.channel.purge(limit=100, before=ref, bulk=True)
+    await ctx.send(embed=make_embed("purge", f"deleted `{len(deleted)}` messages before that message."), delete_after=5)
+
+@purge.command(name="after")
+@commands.has_permissions(manage_messages=True)
+async def purge_after(ctx, message_id: str):
+    try: mid=int(re.search(r"\d{15,22}",message_id).group())
+    except (AttributeError, ValueError): return await ctx.send(embed=make_embed("purge", "provide a message ID or message link."))
+    ref=await ctx.channel.fetch_message(mid); deleted=await ctx.channel.purge(limit=100, after=ref, bulk=True)
+    await ctx.send(embed=make_embed("purge", f"deleted `{len(deleted)}` messages after that message."), delete_after=5)
+
+@purge.command(name="upto")
+@commands.has_permissions(manage_messages=True)
+async def purge_upto(ctx, message_id: str):
+    try: mid=int(re.search(r"\d{15,22}",message_id).group())
+    except (AttributeError, ValueError): return await ctx.send(embed=make_embed("purge", "provide a message ID or message link."))
+    ref=await ctx.channel.fetch_message(mid); deleted=await ctx.channel.purge(limit=100, before=ref, bulk=True); await ref.delete()
+    await ctx.send(embed=make_embed("purge", f"deleted `{len(deleted)+1}` messages up to that message."), delete_after=5)
+
+@purge.command(name="between")
+@commands.has_permissions(manage_messages=True)
+async def purge_between(ctx, start_id: str, finish_id: str):
+    try: a=int(re.search(r"\d{15,22}",start_id).group()); b=int(re.search(r"\d{15,22}",finish_id).group())
+    except (AttributeError, ValueError): return await ctx.send(embed=make_embed("purge", "provide two message IDs or links."))
+    first=await ctx.channel.fetch_message(a); last=await ctx.channel.fetch_message(b)
+    lo,hi=(first,last) if first.id<last.id else (last,first); deleted=await ctx.channel.purge(limit=500, after=lo, before=hi, bulk=True)
+    await ctx.send(embed=make_embed("purge", f"deleted `{len(deleted)}` messages between those messages."), delete_after=5)
+
+async def _purge_filter(ctx, predicate, search=100):
+    if not bot_can(ctx,"manage_messages"): return await ctx.send(embed=make_embed("purge", "I need Manage Messages permission."))
+    limit=max(1,min(int(search),500)); deleted=await ctx.channel.purge(limit=limit+1, check=lambda m: m.id != ctx.message.id and predicate(m), bulk=True)
+    await ctx.send(embed=make_embed("purge", f"deleted `{len(deleted)}` matching messages."), delete_after=5)
+
+# Remaining role group actions.
+@addrole.command(name="add")
+@commands.has_permissions(manage_roles=True)
+async def role_add_sub(ctx, member: discord.Member, role: discord.Role):
+    if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("role", "that role is too high for the bot."))
+    await member.add_roles(role, reason=f"role added by {ctx.author}"); await ctx.send(embed=action_embed(f"Added {role.mention} to {member.mention}", added=True))
+
+@addrole.command(name="remove")
+@commands.has_permissions(manage_roles=True)
+async def role_remove_sub(ctx, member: discord.Member, role: discord.Role):
+    if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("role", "that role is too high for the bot."))
+    await member.remove_roles(role, reason=f"role removed by {ctx.author}"); await ctx.send(embed=action_embed(f"Removed {role.mention} from {member.mention}", removed=True))
+
+@addrole.command(name="delete")
+@commands.has_permissions(manage_roles=True)
+async def role_delete_sub(ctx, role: discord.Role):
+    await deleterole(ctx, role)
+
+@addrole.command(name="edit")
+@commands.has_permissions(manage_roles=True)
+async def role_edit_sub(ctx, role: discord.Role, *, name: str):
+    await role.edit(name=name[:100], reason=f"role renamed by {ctx.author}"); await ctx.send(embed=make_embed("role edit", f"renamed role to {role.mention}."))
+
+@addrole.command(name="mentionable")
+@commands.has_permissions(manage_roles=True)
+async def role_mentionable_sub(ctx, role: discord.Role):
+    await rolementionable(ctx, role)
+
+@addrole.command(name="hoist")
+@commands.has_permissions(manage_roles=True)
+async def role_hoist_sub(ctx, role: discord.Role):
+    await rolehoist(ctx, role)
+
+@addrole.group(name="color", aliases=["colour"], invoke_without_command=True)
+@commands.has_permissions(manage_roles=True)
+async def role_color_sub(ctx, colour: str = None, role: discord.Role = None, second_colour: str = None):
+    if role is None or colour is None: return await ctx.send(embed=make_embed("role color", f"usage: `{PREFIX}role color <hex> <role>` or `{PREFIX}role color gradient <hex1> <hex2> <role>`."))
+    raw=colour.lstrip("#")
+    try: val=int(raw,16)
+    except ValueError: return await ctx.send(embed=make_embed("role color", "use a hex color like `#efcead`."))
+    if len(raw)!=6: return await ctx.send(embed=make_embed("role color", "use a six-digit hex color."))
+    await role.edit(colour=discord.Colour(val), reason=f"role color set by {ctx.author}")
+    extra=f" Gradient second color `{second_colour}` was noted, but Discord.py/your server may not support native gradient role colors." if second_colour else ""
+    await ctx.send(embed=make_embed("role color", f"updated {role.mention} to `#{raw.lower()}`.{extra}"))
+
+@addrole.command(name="create")
+@commands.has_permissions(manage_roles=True)
+async def role_create_sub(ctx, *, name: str):
+    role=await ctx.guild.create_role(name=name[:100], reason=f"role created by {ctx.author}"); await ctx.send(embed=make_embed("role created", f"created {role.mention}."))
+
+@addrole.command(name="icon")
+@commands.has_permissions(manage_roles=True)
+async def role_icon_sub(ctx, url: str, role: discord.Role):
+    await roleicon(ctx, role, url)
+
+@addrole.group(name="humans", invoke_without_command=True)
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def role_humans_group(ctx, role: discord.Role):
+    await rolehumans(ctx, role)
+
+@role_humans_group.command(name="remove")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def role_humans_remove_sub(ctx, role: discord.Role):
+    await rolehumansremove(ctx, role)
+
+@addrole.group(name="bots", invoke_without_command=True)
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def role_bots_group(ctx, role: discord.Role):
+    await rolebots(ctx, role)
+
+@role_bots_group.command(name="remove")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def role_bots_remove_sub(ctx, role: discord.Role):
+    await rolebotsremove(ctx, role)
+
+@addrole.command(name="topcolor")
+@commands.has_permissions(manage_roles=True)
+async def role_topcolor(ctx, colour: str, member: discord.Member = None):
+    member=member or ctx.author; role=next((r for r in reversed(member.roles) if r < ctx.guild.me.top_role and not r.is_default()),None)
+    if not role: return await ctx.send(embed=make_embed("role topcolor", "no manageable role found for that member."))
+    raw=colour.lstrip("#")
+    try: value=int(raw,16)
+    except ValueError: return await ctx.send(embed=make_embed("role topcolor", "use a hex color like `#efcead`."))
+    await role.edit(colour=discord.Colour(value), reason=f"top role color changed by {ctx.author}"); await ctx.send(embed=make_embed("role topcolor", f"updated {role.mention}."))
+
+@addrole.group(name="has", invoke_without_command=True)
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def role_has(ctx, source_role: discord.Role = None, assign_role: discord.Role = None):
+    if source_role is None or assign_role is None: return await ctx.send(embed=make_embed("role has", f"usage: `{PREFIX}role has <source role> <role to add>` or `{PREFIX}role has remove <source role> <role to remove>`."))
+    count=0
+    for member in ctx.guild.members:
+        if source_role in member.roles and assign_role not in member.roles:
+            try: await member.add_roles(assign_role, reason=f"conditional role by {ctx.author}"); count+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("role has", f"added {assign_role.mention} to `{count}` members with {source_role.mention}."))
+
+@addrole.command(name="restore")
+@commands.has_permissions(manage_roles=True)
+async def role_restore(ctx, member: discord.Member):
+    d=_load_json_config("role_backup.json",{}).get(str(ctx.guild.id),{}).get(str(member.id),[]); restored=0
+    for rid in d:
+        role=ctx.guild.get_role(int(rid))
+        if role and role < ctx.guild.me.top_role:
+            try: await member.add_roles(role, reason=f"roles restored by {ctx.author}"); restored+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("role restore", f"restored `{restored}` saved roles to {member.mention}."))
+
+@bot.command(name="raid")
+@commands.has_permissions(ban_members=True)
+async def raid(ctx, duration: str, action: str = "kick", *, reason="raid response"):
+    seconds=parse_duration(duration)
+    if seconds is None: return await ctx.send(embed=make_embed("raid", "duration example: `10m` or `1h`."))
+    cutoff=discord.utils.utcnow()-timedelta(seconds=seconds); affected=0
+    for member in list(ctx.guild.members):
+        if member.bot or member.joined_at is None or member.joined_at < cutoff or member == ctx.author or member.guild_permissions.administrator: continue
+        try:
+            if action.lower()=="ban": await member.ban(reason=f"raid by {ctx.author}: {reason}", delete_message_seconds=0)
+            elif action.lower()=="kick": await member.kick(reason=f"raid by {ctx.author}: {reason}")
+            else: return await ctx.send(embed=make_embed("raid", "action must be `kick` or `ban`."))
+            affected+=1
+        except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("raid", f"processed `{affected}` recent members with action `{action}`. Use carefully; review your member list and permissions."))
+
+
+@role_color_sub.command(name="gradient")
+@commands.has_permissions(manage_roles=True)
+async def role_color_gradient(ctx, first_colour: str, second_colour: str, role: discord.Role):
+    def parse_hex(raw):
+        raw=raw.lstrip("#")
+        if len(raw)!=6: raise ValueError
+        return int(raw,16), raw.lower()
+    try: first, first_text=parse_hex(first_colour); second, second_text=parse_hex(second_colour)
+    except ValueError: return await ctx.send(embed=make_embed("role color gradient", "use two six-digit hex colors, e.g. `#ff99cc #cc99ff`."))
+    # Discord's public role API currently exposes one solid role color in discord.py.
+    # Save the requested pair for reference and apply the first color as a graceful fallback.
+    data=_load_json_config("role_gradients.json",{}); data.setdefault(str(ctx.guild.id),{})[str(role.id)]={"first":f"#{first_text}","second":f"#{second_text}","set_by":ctx.author.id}; _save_json_file("role_gradients.json",data)
+    await role.edit(colour=discord.Colour(first), reason=f"gradient requested by {ctx.author}")
+    await ctx.send(embed=make_embed("role gradient saved", f"saved gradient colors `#{first_text}` → `#{second_text}` for {role.mention}. Discord.py's role API only applies a solid color here, so `#{first_text}` is the visible fallback."))
+
+@role_has.command(name="remove")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def role_has_remove(ctx, source_role: discord.Role, remove_role: discord.Role):
+    count=0
+    for member in ctx.guild.members:
+        if source_role in member.roles and remove_role in member.roles:
+            try: await member.remove_roles(remove_role, reason=f"conditional role removal by {ctx.author}"); count+=1
+            except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("role has remove", f"removed {remove_role.mention} from `{count}` members with {source_role.mention}."))
+
+@addrole.command(name="cancel")
+@commands.has_guild_permissions(manage_roles=True, manage_guild=True)
+async def role_cancel(ctx):
+    data=_load_json_config("role_mass_tasks.json",{}); task=data.get(str(ctx.guild.id))
+    if not task: return await ctx.send(embed=make_embed("role task", "there is no saved mass-role task to cancel."))
+    task["cancel"]=True; data[str(ctx.guild.id)]=task; _save_json_file("role_mass_tasks.json",data)
+    await ctx.send(embed=make_embed("role task", "cancellation requested for the saved mass-role task."))
+
+@nuke.command(name="list")
+@commands.has_permissions(administrator=True)
+async def nuke_list(ctx):
+    d=_load_json_config("scheduled_nukes.json",{}).get(str(ctx.guild.id),{}); body="\n".join(f"<#{cid}> · every `{v.get('interval','?')}` · {v.get('message','')}" for cid,v in d.items()) or "No scheduled nukes configured."
+    await ctx.send(embed=make_embed("scheduled nukes", body[:4000]))
+
+@nuke.command(name="view")
+@commands.has_permissions(administrator=True)
+async def nuke_view(ctx, channel: discord.TextChannel):
+    d=_load_json_config("scheduled_nukes.json",{}).get(str(ctx.guild.id),{}).get(str(channel.id))
+    await ctx.send(embed=make_embed("scheduled nuke", f"**Channel:** {channel.mention}\n**Settings:** `{d}`" if d else f"No scheduled nuke for {channel.mention}."))
+
+@nuke.command(name="remove")
+@commands.has_permissions(administrator=True)
+async def nuke_remove(ctx, channel: discord.TextChannel):
+    data=_load_json_config("scheduled_nukes.json",{}); g=data.setdefault(str(ctx.guild.id),{}); removed=g.pop(str(channel.id),None); _save_json_file("scheduled_nukes.json",data)
+    await ctx.send(embed=make_embed("scheduled nuke", f"removed schedule for {channel.mention}." if removed else "no schedule was found for that channel."))
+
+@nuke.command(name="archive")
+@commands.has_permissions(administrator=True)
+async def nuke_archive(ctx, channel: discord.TextChannel, setting: str):
+    if setting.lower() not in ("on","off","true","false"): return await ctx.send(embed=make_embed("nuke archive", "setting must be `on` or `off`."))
+    data=_load_json_config("scheduled_nukes.json",{}); g=data.setdefault(str(ctx.guild.id),{}); cfg=g.setdefault(str(channel.id),{"interval":"unset","message":"scheduled channel refresh"}); cfg["archive_pins"]=setting.lower() in ("on","true"); _save_json_file("scheduled_nukes.json",data)
+    await ctx.send(embed=make_embed("nuke archive", f"pin archiving {'enabled' if cfg['archive_pins'] else 'disabled'} for {channel.mention}."))
+
+@nuke.command(name="add")
+@commands.has_permissions(administrator=True)
+async def nuke_add(ctx, channel: discord.TextChannel, interval: str, *, message: str = "scheduled channel refresh"):
+    seconds=parse_duration(interval)
+    if seconds is None or seconds < 3600: return await ctx.send(embed=make_embed("nuke schedule", "use an interval of at least `1h`, e.g. `nuke add #general 1d refresh`."))
+    data=_load_json_config("scheduled_nukes.json",{}); g=data.setdefault(str(ctx.guild.id),{}); g[str(channel.id)]={"interval":interval,"seconds":seconds,"message":message[:300],"archive_pins":False,"created_by":ctx.author.id,"next_run":int(time.time()+seconds)}; _save_json_file("scheduled_nukes.json",data)
+    await ctx.send(embed=make_embed("nuke schedule saved", f"saved a schedule for {channel.mention} every `{interval}`. the bot will attempt the channel refresh while online."))
+
+# Apply sticky roles and saved forced nicknames on joins, and keep role backups.
+_reminder_worker_started = False
+
+@bot.listen("on_ready")
+async def start_reminder_worker():
+    global _reminder_worker_started
+    if _reminder_worker_started: return
+    _reminder_worker_started = True
+    async def worker():
+        while not bot.is_closed():
+            await asyncio.sleep(20)
+            data=_load_json_config("reminders.json",{}); changed=False
+            for uid, items in list(data.items()):
+                user=bot.get_user(int(uid))
+                if user is None:
+                    try: user=await bot.fetch_user(int(uid))
+                    except (discord.NotFound, discord.HTTPException): user=None
+                remaining=[]
+                for item in items:
+                    if int(item.get("due",0)) > int(time.time()):
+                        remaining.append(item); continue
+                    if user:
+                        try: await user.send(embed=make_embed("reminder", str(item.get("message","Reminder"))))
+                        except discord.HTTPException: pass
+                    changed=True
+                data[uid]=remaining
+            if changed: _save_json_file("reminders.json",data)
+    asyncio.create_task(worker())
+
+_scheduled_nuke_worker_started = False
+
+@bot.listen("on_ready")
+async def start_scheduled_nuke_worker():
+    global _scheduled_nuke_worker_started
+    if _scheduled_nuke_worker_started: return
+    _scheduled_nuke_worker_started = True
+    async def worker():
+        while not bot.is_closed():
+            await asyncio.sleep(30)
+            data=_load_json_config("scheduled_nukes.json",{}); changed=False
+            for gid, channels in list(data.items()):
+                guild=bot.get_guild(int(gid))
+                if guild is None: continue
+                for cid, cfg in list(channels.items()):
+                    try: due=int(cfg.get("next_run",0)); interval=int(cfg.get("seconds",0))
+                    except (TypeError,ValueError): continue
+                    if interval < 3600 or due > int(time.time()): continue
+                    channel=guild.get_channel(int(cid))
+                    if channel is None:
+                        channels.pop(cid,None); changed=True; continue
+                    try:
+                        archive=None
+                        if cfg.get("archive_pins") and isinstance(channel, discord.TextChannel):
+                            pins=await channel.pins()
+                            if pins:
+                                lines=[f"{m.created_at.isoformat()} | {m.author} ({m.author.id}): {m.content}" for m in pins]
+                                archive=discord.File(io.BytesIO("\n\n".join(lines).encode("utf-8")), filename=f"pins-{channel.id}.txt")
+                        clone=await channel.clone(reason="scheduled channel refresh")
+                        await clone.edit(position=channel.position)
+                        if archive:
+                            try: await clone.send(content="Pinned-message archive before scheduled refresh:", file=archive)
+                            except discord.HTTPException: pass
+                        try: await clone.send(embed=make_embed("scheduled refresh", str(cfg.get("message","scheduled channel refresh"))))
+                        except discord.HTTPException: pass
+                        await channel.delete(reason="scheduled channel refresh")
+                        # A cloned channel gets a new ID, so move its schedule to that ID.
+                        channels.pop(cid,None); cfg["next_run"]=int(time.time())+interval; channels[str(clone.id)]=cfg; changed=True
+                    except (discord.Forbidden, discord.HTTPException):
+                        cfg["next_run"]=int(time.time())+min(interval,3600); changed=True
+            if changed: _save_json_file("scheduled_nukes.json",data)
+    asyncio.create_task(worker())
+
+@bot.listen("on_member_remove")
+async def save_member_roles_before_leave(member):
+    if member.bot: return
+    data=_load_json_config("role_backup.json",{}); data.setdefault(str(member.guild.id),{})[str(member.id)]=[r.id for r in member.roles if not r.is_default() and not r.managed]; _save_json_file("role_backup.json",data)
+
+@bot.listen("on_member_join")
+async def reapply_saved_member_settings(member):
+    sticky=_load_json_config("stickyrole.json",{}).get(str(member.guild.id),{}).get(str(member.id),[])
+    for rid in sticky:
+        role=member.guild.get_role(int(rid))
+        if role and role < member.guild.me.top_role:
+            try: await member.add_roles(role, reason="sticky role re-applied")
+            except (discord.Forbidden, discord.HTTPException): pass
+    forced=_load_json_config("forced_nicknames.json",{}).get(str(member.guild.id),{}).get(str(member.id))
+    if forced:
+        try: await member.edit(nick=forced, reason="forced nickname re-applied")
+        except (discord.Forbidden, discord.HTTPException): pass
+
+@bot.listen("on_member_update")
+async def enforce_saved_nickname(before, after):
+    forced=_load_json_config("forced_nicknames.json",{}).get(str(after.guild.id),{}).get(str(after.id))
+    if forced and after.nick != forced:
+        try: await after.edit(nick=forced, reason="forced nickname enforcement")
+        except (discord.Forbidden, discord.HTTPException): pass
+
+# Add all new command names to the command browser/help directory.
+CATEGORIES.extend([
+    ("Moderation Tools", ["tempban", "softban", "timeoutlist", "untimeout", "imute", "iunmute", "rmute", "runmute", "modstats", "moderationhistory", "jaillist", "caselog", "proof", "history", "unbanall", "raid"]),
+    ("Role Management", ["temprole", "stickyrole", "role add", "role remove", "role delete", "role edit", "role icon", "role color", "role humans", "role bots", "role has", "role restore", "role topcolor", "role mentionable", "role hoist", "role create", "rolehumansremove", "rolebotsremove", "dump"]),
+    ("Channel Management", ["lockdown all", "lockdown role", "lockdown ignore", "unlock all", "unlockall", "purge links", "purge webhooks", "purge humans", "purge bots", "purge embeds", "purge files", "purge images", "purge stickers", "purge reactions", "purge mentions", "purge contains", "purge startswith", "purge endswith", "purge emoji", "purge emotes", "purge activity", "purge before", "purge after", "purge upto", "purge between", "slowmode on", "slowmode off", "revokefiles", "topic", "talk", "naughty"]),
+    ("Utilities", ["reminders", "restrictcommand", "forcenickname", "setupmute", "permissions", "rename"]),
+])
+COMMAND_INFO.update({
+    "reminders": ("View your active reminders.", "reminders", "reminders", []),
+    "proof": ("Manage proof and attachments on a moderation case.", "proof <set|add|list|view|remove> ...", "proof list 12", []),
+    "history": ("View and manage stored moderation history.", "history <member|view|remove|removeall> ...", "history @member", ["cases"]),
+    "modstats": ("View punishment statistics for a moderator.", "modstats [member]", "modstats @moderator", []),
+    "moderationhistory": ("View actions taken by a staff member.", "moderationhistory <member> [command]", "moderationhistory @moderator ban", []),
+    "jaillist": ("List saved jailed members.", "jaillist", "jaillist", []),
+    "temprole": ("Give a role temporarily, with an automatic removal timer.", "temprole <member> <duration> <role>", "temprole @user 2h @Member", []),
+    "stickyrole": ("Save roles to reapply after a member rejoins.", "stickyrole <add|remove|list> ...", "stickyrole add @user @role", []),
+    "restrictcommand": ("Manage role-based command restrictions.", "restrictcommand <add|remove|list|reset> ...", "restrictcommand add ban @Staff", ["restrictcmd"]),
+    "unbanall": ("Unban all users, with a cancellation subcommand.", "unbanall [cancel]", "unbanall", []),
+    "raid": ("Moderate recently joined members in a raid window.", "raid <duration> <kick|ban> [reason]", "raid 10m kick raid response", []),
+    "imute": ("Disable attachments and embeds for a member in this channel.", "imute <member> [reason]", "imute @user spam", []),
+    "iunmute": ("Restore attachments and embeds for a member in this channel.", "iunmute <member> [reason]", "iunmute @user", []),
+    "rmute": ("Disable reactions and external emojis for a member in this channel.", "rmute <member> [reason]", "rmute @user spam", []),
+    "runmute": ("Restore reactions and external emojis for a member in this channel.", "runmute <member> [reason]", "runmute @user", []),
+    "caselog": ("View a case log by ID.", "caselog <case id>", "caselog 12", []),
+    "dump": ("Export all members with a specified role to a text file.", "dump <role>", "dump @Members", []),
+    "rolehumansremove": ("Remove a role from all human members.", "rolehumansremove <role>", "rolehumansremove @Member", []),
+    "rolebotsremove": ("Remove a role from all bot members.", "rolebotsremove <role>", "rolebotsremove @Bots", []),
+    "setupmute": ("Create/configure a Muted role and channel overwrites.", "setupmute", "setupmute", []),
+    "permissions": ("Display a member's effective channel permissions.", "permissions [member] [channel]", "permissions @user #general", []),
+    "rename": ("Change a member's nickname.", "rename <member> <nickname>", "rename @user New Name", []),
+    "forcenickname": ("Save and apply a forced nickname.", "forcenickname <member> <nickname>", "forcenickname @user Fixed Name", []),
+    "topic": ("Set the current channel topic.", "topic <text>", "topic welcome to the server", []),
+    "talk": ("Allow a role to talk in a channel.", "talk <channel> <role>", "talk #general @Members", []),
+    "revokefiles": ("Toggle attachment/embed permissions in a channel.", "revokefiles <on|off> [channel]", "revokefiles on #general", []),
+    "naughty": ("Temporarily mark a channel as NSFW for 30 seconds.", "naughty [channel]", "naughty #general", []),
+    "roleicon": ("Set a role icon from an image URL.", "roleicon <role> <url>", "roleicon @VIP https://example.com/icon.png", []),
+    "rolementionable": ("Toggle whether a role can be mentioned.", "rolementionable <role>", "rolementionable @Members", []),
+    "rolehoist": ("Toggle whether a role is shown separately in the member list.", "rolehoist <role>", "rolehoist @Staff", []),
+    "rolecolor": ("Set a role color using a hex code.", "rolecolor <role> <hex>", "rolecolor @VIP #efcead", ["rolecolour"]),
+    "rolecreate": ("Create a role.", "rolecreate <name>", "rolecreate VIP", []),
+    "roleedit": ("Rename a role.", "roleedit <role> <name>", "roleedit @VIP Premium", []),
+})
+
+
+@ban.command(name="recent")
+@commands.has_permissions(ban_members=True)
+async def ban_recent(ctx, count: int = 5, *, reason="recent join moderation"):
+    count=max(1,min(count,25)); cutoff=discord.utils.utcnow()-timedelta(days=7)
+    members=[m for m in ctx.guild.members if not m.bot and m.joined_at and m.joined_at>=cutoff and m!=ctx.author and not m.guild_permissions.administrator and m.top_role < ctx.guild.me.top_role]
+    members.sort(key=lambda m:m.joined_at or discord.utils.utcnow(), reverse=True); done=0
+    for member in members[:count]:
+        try: await member.ban(reason=f"ban recent by {ctx.author}: {reason}", delete_message_seconds=0); done+=1
+        except (discord.Forbidden, discord.HTTPException): pass
+    await ctx.send(embed=make_embed("ban recent", f"banned `{done}` recent members. Review the count carefully before using this bulk action."))
+
+@ban.command(name="purge")
+@commands.has_permissions(manage_guild=True, ban_members=True)
+async def ban_purge_sub(ctx, seconds: int = 604800):
+    seconds=max(0,min(seconds,604800)); cfg=guild_cfg(ctx.guild.id); cfg["ban_delete_seconds"]=seconds; save_ultimate_config()
+    await ctx.send(embed=make_embed("ban purge setting", f"normal bans will delete up to `{seconds}` seconds of message history."))
+
+CATEGORIES.extend([
+    ("Moderation Subcommands", ["remind list", "remind remove", "thread watch list", "lockdown all", "lockdown role", "lockdown ignore", "lockdown ignore add", "lockdown ignore remove", "lockdown ignore list", "history view", "history remove", "history removeall", "proof set", "proof add", "proof list", "proof view", "proof remove", "ban recent", "ban purge", "unbanall cancel", "hardban list", "timeout list", "temprole list"]),
+    ("Role Subcommands", ["role add", "role remove", "role delete", "role icon", "role humans", "role humans remove", "role mentionable", "role cancel", "role edit", "role topcolor", "role restore", "role hoist", "role bots", "role bots remove", "role color", "role color gradient", "role create", "role has", "role has remove"]),
+    ("Purge Subcommands", ["purge after", "purge webhooks", "purge between", "purge links", "purge humans", "purge endswith", "purge reactions", "purge stickers", "purge mentions", "purge activity", "purge emoji", "purge startswith", "purge emotes", "purge upto", "purge embeds", "purge files", "purge images", "purge contains", "purge before", "purge bots"]),
+    ("Nuke Subcommands", ["nuke add", "nuke remove", "nuke list", "nuke archive", "nuke view"]),
+])
+COMMAND_INFO.update({
+    "ban recent": ("Ban a limited number of members who joined within the last seven days.", "ban recent [count] [reason]", "ban recent 5 suspected raid", []),
+    "ban purge": ("Set how much message history normal bans delete.", "ban purge [seconds]", "ban purge 86400", []),
+    "role color gradient": ("Save two requested gradient colors; Discord.py applies a solid-color fallback because native gradient roles are not exposed here.", "role color gradient <hex1> <hex2> <role>", "role color gradient #ff99cc #cc99ff @VIP", []),
+    "role has remove": ("Remove a role from members who have another specified role.", "role has remove <source role> <role to remove>", "role has remove @VIP @Member", []),
+    "nuke add": ("Save a scheduled channel refresh configuration.", "nuke add <channel> <interval> [message]", "nuke add #general 1d daily refresh", []),
+    "nuke remove": ("Remove a saved scheduled channel refresh configuration.", "nuke remove <channel>", "nuke remove #general", []),
+    "nuke list": ("List saved scheduled channel refresh configurations.", "nuke list", "nuke list", []),
+    "nuke archive": ("Set whether pin archiving is enabled for a scheduled refresh.", "nuke archive <channel> <on|off>", "nuke archive #general on", []),
+    "nuke view": ("View a channel's saved scheduled refresh configuration.", "nuke view <channel>", "nuke view #general", []),
+    "role cancel": ("Request cancellation of a saved mass-role task.", "role cancel", "role cancel", []),
+    "thread watch list": ("List threads in the watch list.", "thread watch list", "thread watch list", []),
+    "lockdown ignore add": ("Add a channel to the lockdown ignore list.", "lockdown ignore add <channel>", "lockdown ignore add #staff", []),
+    "lockdown ignore remove": ("Remove a channel from the lockdown ignore list.", "lockdown ignore remove <channel>", "lockdown ignore remove #staff", []),
+    "lockdown ignore list": ("List channels excluded from unlock-all.", "lockdown ignore list", "lockdown ignore list", []),
+    "history view": ("View a moderation case by ID.", "history view <case id>", "history view 123-1", []),
+    "history remove": ("Remove a case entry for a member.", "history remove <member> <case id>", "history remove @user 1", []),
+    "history removeall": ("Clear all stored punishment history for a member.", "history removeall <member>", "history removeall @user", []),
+    "proof set": ("Set the explanation attached to a case.", "proof set <case id> <explanation>", "proof set 123-1 repeated spam", []),
+    "proof add": ("Add a media URL to a case.", "proof add <case id> <url>", "proof add 123-1 https://example.com/evidence.png", []),
+    "proof list": ("List proof and attachments on a case.", "proof list <case id>", "proof list 123-1", []),
+    "proof view": ("View proof attached to a case.", "proof view <case id>", "proof view 123-1", []),
+    "proof remove": ("Remove an attachment from a case.", "proof remove <case id> <index>", "proof remove 123-1 1", []),
+    "remind list": ("List your reminders.", "remind list", "remind list", []),
+    "remind remove": ("Remove a reminder by ID.", "remind remove <id>", "remind remove 2", []),
+    "unbanall cancel": ("Request cancellation of an unban-all operation.", "unbanall cancel", "unbanall cancel", []),
+    "hardban list": ("List hardbanned users.", "hardban list", "hardban list", []),
+    "timeout list": ("List members currently timed out.", "timeout list", "timeout list", []),
+    "temprole list": ("List saved temporary roles.", "temprole list", "temprole list", []),
+})
+# Ensure every entry in the command browser has a help description, even when its parent
+# command is implemented as a group/subcommand.
+for _category_name, _category_commands in CATEGORIES:
+    for _command_name in _category_commands:
+        if _command_name not in COMMAND_INFO:
+            _pretty = _command_name.replace("_", " ").strip()
+            COMMAND_INFO[_command_name] = (f"Manage { _pretty }.", f"{_command_name} [arguments]", _command_name, [])
+
+
+CATEGORIES.extend([
+    ("Remaining Supplied Commands", ["modstats", "moderationhistory", "history", "history view", "history removeall", "history remove", "jaillist", "proof", "caselog", "reason", "timeout list", "untimeout", "mute", "unmute", "imute", "iunmute", "rmute", "runmute", "notes", "notes add", "notes clear", "notes remove", "hardban", "hardban list", "clearinvites", "drag", "unbanall", "unbanall cancel", "softban", "ban purge", "ban recent", "unjail", "temprole", "temprole list", "role", "role delete", "role icon", "role remove", "role humans", "role humans remove", "role add", "role mentionable", "role cancel", "role edit", "role topcolor", "role restore", "role hoist", "role bots", "role bots remove", "role color", "role color gradient", "role create", "role has", "role has remove"]),
+    ("More Purge Commands", ["purge", "purge after", "purge webhooks", "purge between", "purge links", "purge humans", "purge endswith", "purge reactions", "purge stickers", "purge mentions", "purge activity", "purge emoji", "purge startswith", "purge emotes", "purge upto", "purge embeds", "purge files", "purge images", "purge contains", "purge before", "purge bots", "dump"]),
+    ("More Server Commands", ["nuke", "nuke remove", "nuke list", "nuke archive", "nuke add", "nuke view", "newmembers", "recentban", "talk", "unhide", "hide", "slowmode", "slowmode on", "slowmode off", "revokefiles", "revokefiles on", "revokefiles off", "setup", "rename", "restrictcommand", "restrictcommand reset", "restrictcommand list", "restrictcommand remove", "restrictcommand add", "stickyrole", "stickyrole remove", "stickyrole add", "stickyrole list", "raid", "forcenickname", "forcenickname list", "topic", "naughty", "setupmute", "permissions"]),
+])
+for _category_name, _category_commands in CATEGORIES:
+    for _command_name in _category_commands:
+        if _command_name not in COMMAND_INFO:
+            _pretty = _command_name.replace("_", " ").strip()
+            COMMAND_INFO[_command_name] = (f"Manage {_pretty}.", f"{_command_name} [arguments]", _command_name, [])
+
+
+CATEGORIES.extend([
+    ("Case and Note Tools", ["reason", "notes", "notes add", "notes clear", "notes remove", "notes list", "setup"]),
+])
+COMMAND_INFO.update({
+    "reason": ("Update the reason attached to a moderation case.", "reason <case id> <reason>", "reason 123-1 updated context", []),
+    "setup": ("Create a mod-log channel and configure a Muted role.", "setup", "setup", []),
+    "notes add": ("Add a note to a member.", "notes add <member> <note>", "notes add @user repeated spam", []),
+    "notes clear": ("Clear all notes for a member.", "notes clear <member>", "notes clear @user", []),
+    "notes remove": ("Remove a note by its list index.", "notes remove <member> <id>", "notes remove @user 2", []),
+    "notes list": ("List notes stored for a member.", "notes list <member>", "notes list @user", []),
+    "timeout list": ("List members currently timed out.", "timeout list", "timeout list", []),
+    "hardban list": ("List hardbanned users.", "hardban list", "hardban list", []),
+})
+for _category_name, _category_commands in CATEGORIES:
+    for _command_name in _category_commands:
+        if _command_name not in COMMAND_INFO:
+            _pretty = _command_name.replace("_", " ").strip()
+            COMMAND_INFO[_command_name] = (f"Manage {_pretty}.", f"{_command_name} [arguments]", _command_name, [])
 
 bot.run(TOKEN)
