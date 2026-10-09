@@ -4674,7 +4674,9 @@ async def pins_compat(ctx, action="config", *, value=""):
     if not compat_need_manage(ctx): return await compat_reply(ctx,"pins","You need Manage Guild.")
     cfg=compat_guild(ctx).setdefault("pins",{"enabled":False,"channel":None,"unpin":True})
     action=action.lower()
-    if action=="config": return await compat_reply(ctx,"pins",f"enabled: `{cfg['enabled']}`\narchive channel: {f'<#{cfg['channel']}>' if cfg.get('channel') else '`not set`'}\nunpin during archive: `{cfg['unpin']}`")
+    if action=="config":
+        archive_channel = f"<#{cfg['channel']}>" if cfg.get("channel") else "`not set`"
+        return await compat_reply(ctx, "pins", f"enabled: `{cfg['enabled']}`\narchive channel: {archive_channel}\nunpin during archive: `{cfg['unpin']}`")
     if action=="set": cfg["enabled"]=value.lower() in {"on","yes","true","enable","enabled"}
     elif action=="reset": cfg.update({"enabled":False,"channel":None,"unpin":True})
     elif action=="channel":
