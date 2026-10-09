@@ -2040,7 +2040,7 @@ async def mute(ctx,member:discord.Member=None,minutes:int=10,*,reason="no reason
     record_modlog(ctx.guild, member, "Mute", ctx.author, reason, duration=f"{minutes} minutes")
     await ctx.send(embed=result_embed("Member Muted", "User", fmt_user(member), extra=[("Duration", f"{minutes} minutes"), ("Reason", reason), ("Moderator", ctx.author.mention)]))
 
-@bot.command(aliases=["um","untimeout"])
+@bot.command(aliases=["um","untimeout","untimeoutmember"])
 async def unmute(ctx,member:discord.Member):
     if not role_ok(ctx.author, MUTE_ROLES):
         return await ctx.send(embed=make_embed("no permission", "you need the configured mute role or Administrator."))
@@ -5379,12 +5379,6 @@ async def slowmode_on(ctx, channel: discord.TextChannel = None, delay: str = "5s
 @commands.has_permissions(manage_channels=True)
 async def slowmode_off(ctx, channel: discord.TextChannel = None):
     channel=channel or ctx.channel; await channel.edit(slowmode_delay=0); await ctx.send(embed=make_embed("slowmode", f"disabled slowmode on {channel.mention}."))
-
-@bot.command(name="untimeout", aliases=["untimeoutmember"])
-@commands.has_permissions(moderate_members=True)
-async def untimeout_cmd(ctx, member: discord.Member, *, reason="No reason provided"):
-    await member.timeout(None, reason=f"{ctx.author}: {reason}"); record_modlog(ctx.guild, member, "UNTIMEOUT", ctx.author, reason)
-    await ctx.send(embed=make_embed("timeout removed", f"removed timeout for {member.mention}."))
 
 @bot.command(name="imute")
 @commands.has_permissions(moderate_members=True)
