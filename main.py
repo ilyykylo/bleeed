@@ -634,7 +634,6 @@ COMMAND_INFO.update({
 
 COMMAND_INFO.update({
     "memberinfo": ("Show detailed member information.", "memberinfo [member]", "memberinfo @user", []),
-    "rolecount": ("Count members with a role.", "rolecount <role>", "rolecount @Staff", []),
     "categorylist": ("List server categories and channel counts.", "categorylist", "categorylist", []),
     "threadlist": ("List active server threads.", "threadlist", "threadlist", []),
     "forumchannels": ("List server forum channels.", "forumchannels", "forumchannels", []),
@@ -3804,11 +3803,6 @@ async def memberinfo(ctx, member: discord.Member = None):
     await ctx.send(embed=make_embed("member information", f"**User**\n{member.mention} · `{member.id}`\n\n**Account**\nCreated <t:{int(member.created_at.timestamp())}:R>\nJoined <t:{int(member.joined_at.timestamp())}:R>\nBot `{member.bot}`\n\n**Roles**\n{' '.join(roles) or '`none`'}"))
 
 @bot.command()
-async def rolecount(ctx, role: discord.Role):
-    count = len(role.members)
-    await ctx.send(embed=result_embed("Role Count", "Role", role.mention, extra=[("Members", f"`{count}`")]))
-
-@bot.command()
 async def categorylist(ctx):
     lines = [f"`{i:02}` {c.mention} · `{len(c.channels)}` channels" for i,c in enumerate(ctx.guild.categories, 1)]
     await ctx.send(embed=make_embed("categories", "\n".join(lines) or "`none`"))
@@ -4008,7 +4002,7 @@ async def securityreset(ctx):
 
 CATEGORIES.extend([
     ("Server Plus", ["rename", "slowmodeall", "lockall", "unlockall", "categorylist", "threadlist", "forumchannels", "serverfeatures", "boosters", "serverroles"]),
-    ("Information Plus", ["memberinfo", "rolecount", "memberpermissions"]),
+    ("Information Plus", ["memberinfo", "countrole", "memberpermissions"]),
     ("Moderation Plus", ["modstats", "modrecent", "deafen", "undeafen", "voicekick", "warnlist"]),
     ("Antinuke", ["antinukestatus", "antinukewindow"]),
     ("Antiraid", ["raidmode", "antiraidstatus", "antiraidwindow", "securityreset"]),
