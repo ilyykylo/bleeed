@@ -451,6 +451,24 @@ def _response_color(title=None, description=None):
     return COLOR
 
 
+def command_module(command):
+    """Map the flat prefix command registry to the same category-oriented layout used by Bleed-style bots."""
+    name = (getattr(command, "qualified_name", None) or getattr(command, "name", "")).lower()
+    root = name.split()[0] if name else ""
+    groups = {
+        "moderation": {"ban", "unban", "kick", "mute", "unmute", "timeout", "warn", "warnings", "unwarn", "clearwarnings", "purge", "purgeuser", "purgebots", "lock", "unlock", "snipe", "cs", "modlogs", "quarantine", "unquarantine", "softban", "hardban", "unbanall", "jail", "unjail", "history", "moderationhistory", "modstats", "reason", "notes", "caselog", "proof", "timeoutlist", "temprole", "banpurge", "ban_recent", "slowmode", "nuke", "raid", "stripstaff", "revokefiles"},
+        "information": {"userinfo", "memberinfo", "serverinfo", "botinfo", "avatar", "banner", "roles", "serverroles", "memberlist", "countrole", "channelstats", "permissionscheck", "serverage", "uptimeinfo", "categorylist", "threadlist", "forumchannels", "serverfeatures", "boosters", "memberpermissions", "guildpermissions", "randomuser", "roleinfo", "emojiinfo"},
+        "owner": {"servers", "guilds", "status", "stream", "maintenance", "leaveguild"},
+        "utility": {"help", "commands", "ping", "uptime", "timestamp", "countdown", "poll", "afk", "remind", "reminder", "embed", "setup", "permissions", "topic", "rename", "forcenickname", "talk", "hide", "unhide", "create", "role", "slowmode", "welcome", "disablewelcome", "booster", "vanity", "ticket", "close", "giveaway", "gaw", "suggest", "suggestchannel", "starboard", "autorole", "autoreact", "ar", "br"},
+        "fun": {"8ball", "coinflip", "choose", "fact", "joke", "mock", "rate", "roll", "wyr", "rps", "truth", "dare", "wouldyou", "compliment", "reverse", "dice", "hug", "pat", "love", "simp", "gayrate", "howlucky", "ship", "shipname", "naughty"},
+        "lastfm": {"fm", "lastfm", "np", "nowplaying", "toptracks", "topartists", "topalbums"},
+    }
+    for category, names in groups.items():
+        if root in names or any(name.startswith(prefix + " ") for prefix in names):
+            return category
+    return "server"
+
+
 def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
     """Shared compact embed styling: neutral info, green success, red error."""
     e = discord.Embed(color=_response_color(title, description))
@@ -1287,7 +1305,7 @@ class GroupHelpView(discord.ui.View):
         permissions = "Manage Channels" if cmd.name in {"exclusive", "add", "remove", "clear"} and self.group.name in {"ar", "autoresponder"} else "n/a"
         if cmd.name in {"servers", "guilds", "maintenance", "status", "stream"}:
             permissions = "Server Owner"
-        module = getattr(cmd, "cog_name", None) or "servers"
+        module = getattr(cmd, "cog_name", None) or command_module(cmd)
         e = discord.Embed(description=f"# group command: {self.display_name.lower()} {cmd.name.lower()}\n{description}", color=COLOR)
         e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
         e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
@@ -1364,7 +1382,7 @@ async def help(ctx, *, command_name=None):
             permission = "Configured server permission"
         else:
             permission = "n/a"
-        module = getattr(cmd, "cog_name", None) or "servers"
+        module = getattr(cmd, "cog_name", None) or command_module(cmd)
         e = discord.Embed(description=f"# command: {cmd.qualified_name.lower()}\n{description}", color=COLOR)
         e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
         e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
@@ -1372,11 +1390,19 @@ async def help(ctx, *, command_name=None):
         e.add_field(name="Usage", value=f"```text\nSyntax: {PREFIX}{syntax}\nExample: {PREFIX}{example}\n```", inline=False)
         e.description = (e.description or "") + f"\n\n-# Page 1/1 (1 entry) ∙ Module: {module}"
         return await ctx.send(embed=e)
-    e = directory_embed("bleeed", "premium-style moderation, security, server management and utility tools", ctx=ctx)
-    e.add_field(name="**Prefix**", value=f"`{PREFIX}`", inline=True)
-    e.add_field(name="**Commands**", value=f"`{len(COMMAND_INFO)}`", inline=True)
-    e.add_field(name="**Help**", value=f"`{PREFIX}help <command>**", inline=True)
-    e.description += f"\n\nuse `{PREFIX}commands` to browse the command directory."
+    e = directory_embed("bleeed", "command directory", ctx=ctx)
+    e.add_field(name="prefix", value=f"`{PREFIX}`", inline=True)
+    e.add_field(name="commands", value=f"`{len(bot.commands)}`", inline=True)
+    e.add_field(name="usage", value=f"`{PREFIX}help <command>`", inline=True)
+    category_order = ("moderation", "information", "utility", "fun", "owner", "lastfm", "server")
+    category_counts = {category: 0 for category in category_order}
+    for registered in bot.commands:
+        category_counts[command_module(registered)] = category_counts.get(command_module(registered), 0) + 1
+    for category in category_order:
+        count = category_counts.get(category, 0)
+        if count:
+            e.add_field(name=category, value=f"`{count} commands`", inline=True)
+    e.description += f"\n\nuse `{PREFIX}commands` to browse every command, or `{PREFIX}help <command>` for syntax, aliases, parameters, and examples."
     await ctx.send(embed=e)
 
 
