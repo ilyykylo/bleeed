@@ -487,6 +487,14 @@ def action_embed(message, *, added=False, removed=False):
     return discord.Embed(description=f"{icon} {message}".strip(), color=COLOR)
 
 
+def mod_success(message):
+    return discord.Embed(description=f"<:add:1557785192712642634> successfully {message}", color=COLOR)
+
+
+def mod_error(message):
+    return discord.Embed(description=f"<:remove:1557785190183600258> error: {message}", color=COLOR)
+
+
 def role_ok(member, role_ids):
     # Server Administrators always pass BLEEED's role-based moderation checks.
     return member.guild_permissions.administrator or any(r.id in role_ids for r in member.roles)
@@ -1958,7 +1966,7 @@ async def quarantine(ctx, member: discord.Member, *, reason="No reason provided"
     quarantine_data[ctx.guild.id][member.id] = saved
     save_quarantine()
     record_modlog(ctx.guild, member, "Quarantine", ctx.author, reason)
-    await ctx.send(embed=result_embed("Member Quarantined", "User", fmt_user(member), extra=[("Reason", reason), ("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"quarantined {member.mention}"))
 
 @bot.command(aliases=["unq"])
 async def unquarantine(ctx, member: discord.Member):
@@ -1982,14 +1990,14 @@ async def unquarantine(ctx, member: discord.Member):
     quarantine_data[ctx.guild.id].pop(member.id, None)
     save_quarantine()
     record_modlog(ctx.guild, member, "Unquarantine", ctx.author, "Removed quarantine")
-    await ctx.send(embed=result_embed("Member Unquarantined", "User", fmt_user(member), extra=[("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"unquarantined {member.mention}"))
 
 @bot.group(name="ban", aliases=["b"], invoke_without_command=True)
 async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
     if not role_ok(ctx.author, {BAN_ROLE}):
-        return await ctx.send(embed=make_embed("no permission", "you need the configured ban role or Administrator."))
+        return await ctx.send(embed=mod_error("couldn't ban that user — missing permission"))
     if not bot_can(ctx, "ban_members"):
-        return await ctx.send(embed=make_embed("bot permission missing", "I need **Ban Members** permission to do that."))
+        return await ctx.send(embed=mod_error("couldn't ban that user — missing bot permission"))
     if not target_ok(ctx, member):
         return await ctx.send(embed=make_embed("cannot ban member", "The target must be below my highest role and below your highest role."))
     explicit = re.match(r"^(\d{1,6})(?:\s+(.*))?$", reason.strip())
@@ -2002,9 +2010,9 @@ async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
     try:
         await member.ban(reason=reason, delete_message_seconds=delete_seconds)
     except discord.Forbidden:
-        return await ctx.send(embed=make_embed("ban failed", "Discord denied the ban. Check my **Ban Members** permission and role hierarchy."))
+        return await ctx.send(embed=mod_error(f"couldn't ban {member.mention}"))
     except discord.HTTPException:
-        return await ctx.send(embed=make_embed("ban failed", "Discord returned an error while banning that member."))
+        return await ctx.send(embed=mod_error(f"couldn't ban {member.mention}"))
     record_modlog(ctx.guild, member, "Ban", ctx.author, reason, details=f"Message deletion window: {delete_seconds} seconds")
     dm_sent = True
     try:
@@ -2015,12 +2023,12 @@ async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
         await member.send(embed=dm_embed)
     except (discord.Forbidden, discord.HTTPException):
         dm_sent = False
-    await ctx.send(embed=result_embed("Member Banned", "User", fmt_user(member), extra=[("Reason", reason), ("Messages", f"deleted from the last {delete_seconds} seconds"), ("DM", "sent" if dm_sent else "could not be delivered"), ("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"banned {member.mention}"))
 
 @bot.command(aliases=["ub"])
 async def unban(ctx, user_id:int):
     if not role_ok(ctx.author, {BAN_ROLE}):
-        return await ctx.send(embed=make_embed("no permission", "you need the configured ban role or Administrator."))
+        return await ctx.send(embed=mod_error("couldn't ban that user — missing permission"))
     if not bot_can(ctx, "ban_members"):
         return await ctx.send(embed=make_embed("bot permission missing", "I need **Ban Members** permission to unban users."))
     try:
@@ -2032,12 +2040,12 @@ async def unban(ctx, user_id:int):
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("unban failed", "Discord returned an error while unbanning that user."))
     record_modlog(ctx.guild, user_id, "Unban", ctx.author, "Unbanned by moderator")
-    await ctx.send(embed=result_embed("Member Unbanned", "User ID", f"`{user_id}`", extra=[("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"unbanned `{user_id}`"))
 
 @bot.command(aliases=["k"])
 async def kick(ctx, member:discord.Member,*,reason="no reason provided"):
     if not role_ok(ctx.author, KICK_ROLES):
-        return await ctx.send(embed=make_embed("no permission", "you need the configured kick role or Administrator."))
+        return await ctx.send(embed=mod_error("couldn't kick that user — missing permission"))
     if not bot_can(ctx, "kick_members"):
         return await ctx.send(embed=make_embed("bot permission missing", "I need **Kick Members** permission to do that."))
     if not target_ok(ctx, member):
@@ -2045,18 +2053,18 @@ async def kick(ctx, member:discord.Member,*,reason="no reason provided"):
     try:
         await member.kick(reason=reason)
     except discord.Forbidden:
-        return await ctx.send(embed=make_embed("kick failed", "Discord denied the kick. Check my **Kick Members** permission and role hierarchy."))
+        return await ctx.send(embed=mod_error(f"couldn't kick {member.mention}"))
     except discord.HTTPException:
-        return await ctx.send(embed=make_embed("kick failed", "Discord returned an error while kicking that member."))
+        return await ctx.send(embed=mod_error(f"couldn't kick {member.mention}"))
     record_modlog(ctx.guild, member, "Kick", ctx.author, reason)
-    await ctx.send(embed=result_embed("Member Kicked", "User", fmt_user(member), extra=[("Reason", reason), ("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"kicked {member.mention}"))
 
 @bot.group(name="mute", aliases=["timeout","to"], invoke_without_command=True)
 async def mute(ctx,member:discord.Member=None,minutes:int=10,*,reason="no reason provided"):
     if not role_ok(ctx.author, MUTE_ROLES):
-        return await ctx.send(embed=make_embed("no permission", "you need the configured mute role or Administrator."))
+        return await ctx.send(embed=mod_error("couldn't mute that user — missing permission"))
     if not bot_can(ctx, "moderate_members"):
-        return await ctx.send(embed=make_embed("bot permission missing", "I need **Moderate Members** permission to mute users."))
+        return await ctx.send(embed=mod_error("couldn't mute that user — missing bot permission"))
     if minutes < 1 or minutes > 40320:
         return await ctx.send(embed=make_embed("invalid duration", "Mute duration must be between **1 minute** and **28 days**."))
     if not target_ok(ctx, member):
@@ -2064,16 +2072,16 @@ async def mute(ctx,member:discord.Member=None,minutes:int=10,*,reason="no reason
     try:
         await member.timeout(timedelta(minutes=minutes), reason=reason)
     except discord.Forbidden:
-        return await ctx.send(embed=make_embed("mute failed", "Discord denied the timeout. Check my **Moderate Members** permission and role hierarchy."))
+        return await ctx.send(embed=mod_error(f"couldn't mute {member.mention}"))
     except discord.HTTPException:
-        return await ctx.send(embed=make_embed("mute failed", "Discord returned an error while muting that member."))
+        return await ctx.send(embed=mod_error(f"couldn't mute {member.mention}"))
     record_modlog(ctx.guild, member, "Mute", ctx.author, reason, duration=f"{minutes} minutes")
-    await ctx.send(embed=result_embed("Member Muted", "User", fmt_user(member), extra=[("Duration", f"{minutes} minutes"), ("Reason", reason), ("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"muted {member.mention} for {minutes} minutes"))
 
 @bot.command(aliases=["um","untimeout","untimeoutmember"])
 async def unmute(ctx,member:discord.Member):
     if not role_ok(ctx.author, MUTE_ROLES):
-        return await ctx.send(embed=make_embed("no permission", "you need the configured mute role or Administrator."))
+        return await ctx.send(embed=mod_error("couldn't mute that user — missing permission"))
     if not bot_can(ctx, "moderate_members"):
         return await ctx.send(embed=make_embed("bot permission missing", "I need **Moderate Members** permission to remove timeouts."))
     if not target_ok(ctx, member):
@@ -2085,17 +2093,17 @@ async def unmute(ctx,member:discord.Member):
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("unmute failed", "Discord returned an error while removing the timeout."))
     record_modlog(ctx.guild, member, "Unmute", ctx.author, "Removed timeout")
-    await ctx.send(embed=result_embed("Member Unmuted", "User", fmt_user(member), extra=[("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"unmuted {member.mention}"))
 
 @bot.command(aliases=["w"])
 async def warn(ctx,member:discord.Member,*,reason="no reason provided"):
     if not role_ok(ctx.author, WARN_ROLES):
-        return await ctx.send(embed=make_embed("no permission", "you need the configured warn role or Administrator."))
+        return await ctx.send(embed=mod_error("couldn't warn that user — missing permission"))
     if not target_ok(ctx,member):
         return await ctx.send(embed=make_embed("cannot warn member", "You can't warn yourself, the server owner, or someone at/above your role."))
     warning_data[ctx.guild.id][member.id].append(reason)
     record_modlog(ctx.guild, member, "Warn", ctx.author, reason)
-    await ctx.send(embed=result_embed("Member Warned", "User", fmt_user(member), extra=[("Reason", reason), ("Total Warnings", str(len(warning_data[ctx.guild.id][member.id]))), ("Moderator", ctx.author.mention)]))
+    await ctx.send(embed=mod_success(f"warned {member.mention}"))
 
 @bot.command()
 async def warnings(ctx,member:discord.Member=None):
@@ -2118,7 +2126,7 @@ async def purge(ctx,amount:int=10):
         return await ctx.send(embed=make_embed("purge failed", "Discord denied the action. Check my **Manage Messages** and **Read Message History** permissions."))
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("purge failed", "Discord returned an error while deleting messages."))
-    msg=await ctx.send(embed=result_embed("Messages Purged", "Deleted", f"**{max(0,len(deleted)-1)}** messages", extra=[("Moderator", ctx.author.mention)]))
+    msg=await ctx.send(embed=mod_success(f"purged {max(0,len(deleted)-1)} messages"))
     await asyncio.sleep(3)
     try: await msg.delete()
     except discord.HTTPException: pass
