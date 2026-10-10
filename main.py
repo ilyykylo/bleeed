@@ -436,11 +436,26 @@ load_quarantine()
 
 
 
+def _response_color(title=None, description=None):
+    """Use restrained status colors across command replies."""
+    text = f"{title or ''} {description or ''}".lower()
+    errors = ("error", "couldn't", "could not", "can't", "cannot", "no permission",
+              "missing permission", "invalid", "failed", "not found", "denied", "must be")
+    successes = ("successfully", "success", "enabled", "disabled", "created", "deleted",
+                 "muted", "unmuted", "banned", "unbanned", "kicked", "warned", "locked",
+                 "unlocked", "purged", "quarantined", "restored", "added", "removed", "saved")
+    if any(word in text for word in errors):
+        return 0xED4245
+    if any(word in text for word in successes):
+        return 0x57F287
+    return COLOR
+
+
 def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
-    """Consistent compact directory-style embed system inspired by modern Discord bot UIs."""
-    e = discord.Embed(color=COLOR)
+    """Shared compact embed styling: neutral info, green success, red error."""
+    e = discord.Embed(color=_response_color(title, description))
     if title:
-        heading = f"# {title}"
+        heading = f"# {str(title).strip().lower()}"
         e.description = heading if not description else f"{heading}\n{description}"
     elif description:
         e.description = description
@@ -484,15 +499,15 @@ def action_embed(message, *, added=False, removed=False):
         icon = "<:remove:1557785190183600258>"
     else:
         icon = ""
-    return discord.Embed(description=f"{icon} {message}".strip(), color=COLOR)
+    return discord.Embed(description=f"{icon} {message}".strip(), color=_response_color(None, message))
 
 
 def mod_success(message):
-    return discord.Embed(description=f"<:add:1557785192712642634> successfully {message}", color=COLOR)
+    return discord.Embed(description=f"<:add:1557785192712642634> successfully {message}", color=0x57F287)
 
 
 def mod_error(message):
-    return discord.Embed(description=f"<:remove:1557785190183600258> error: {message}", color=COLOR)
+    return discord.Embed(description=f"<:remove:1557785190183600258> error: {message}", color=0xED4245)
 
 
 def role_ok(member, role_ids):
@@ -1273,7 +1288,7 @@ class GroupHelpView(discord.ui.View):
         if cmd.name in {"servers", "guilds", "maintenance", "status", "stream"}:
             permissions = "Server Owner"
         module = getattr(cmd, "cog_name", None) or "servers"
-        e = discord.Embed(title=f"Group Command: {self.display_name} {cmd.name}", description=description, color=COLOR)
+        e = discord.Embed(description=f"# group command: {self.display_name.lower()} {cmd.name.lower()}\n{description}", color=COLOR)
         e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
         e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
         e.add_field(name="Information", value=f"⚠️ {permissions}", inline=True)
@@ -1350,7 +1365,7 @@ async def help(ctx, *, command_name=None):
         else:
             permission = "n/a"
         module = getattr(cmd, "cog_name", None) or "servers"
-        e = discord.Embed(title=f"Command: {cmd.qualified_name}", description=description, color=COLOR)
+        e = discord.Embed(description=f"# command: {cmd.qualified_name.lower()}\n{description}", color=COLOR)
         e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
         e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
         e.add_field(name="Information", value=permission, inline=True)
