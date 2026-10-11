@@ -62,24 +62,30 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
             message += "!" if embed.response_success else "."
         kwargs["embed"] = discord.Embed(
             description=f"{icon} {self.author.mention}: {message}",
-            color=0x57F287 if embed.response_success else 0xED4245,
+            color=COLOR,
         )
         content = None
+    elif isinstance(embed, discord.Embed):
+        # One consistent bleeed embed style for every prefix-command embed.
+        # Keep useful fields, images, thumbnails and views, but remove legacy
+        # title bars, authors, footers, timestamps and inconsistent colors.
+        if embed.title:
+            heading = f"# {embed.title.strip().lower()}"
+            existing_description = (embed.description or "").lstrip()
+            if not existing_description.lower().startswith(heading.lower()):
+                embed.description = f"{heading}\n{embed.description}" if embed.description else heading
+            embed.title = None
+        embed.color = discord.Color(COLOR)
+        embed.remove_author()
+        embed.remove_footer()
+        embed.timestamp = None
     elif embed is None and isinstance(content, str) and self.command is not None and not kwargs.get("file") and not kwargs.get("files"):
-        # Normalize every command's plain-text reply into an embed. This includes
-        # invalid arguments, permission errors, BR replies, and utility responses.
+        # Normalize every command's plain-text reply into a compact embed.
         text = content.strip()
         lowered = text.lower()
         if "invalid arguement" in lowered or "invalid argument" in lowered:
             text = re.sub(r"invalid arguement|invalid argument", "Invalid arguement", text, flags=re.I)
-            color = 0xFEE75C
-        elif "missing permission" in lowered or "couldn't" in lowered or "could not" in lowered or "failed" in lowered or "error:" in lowered or "error " in lowered:
-            color = 0xED4245
-        elif "<:approve:1558768853058588682>" in text or "successfully" in lowered or "you're now" in lowered or "welcome back" in lowered:
-            color = 0x57F287
-        else:
-            color = COLOR
-        kwargs["embed"] = discord.Embed(description=text, color=color)
+        kwargs["embed"] = discord.Embed(description=text, color=COLOR)
         content = None
     return await _original_context_send(self, content, *args, **kwargs)
 commands.Context.send = _bleeed_context_send
@@ -515,8 +521,8 @@ def command_module(command):
 
 
 def make_embed(title=None, description=None, *, footer=False, timestamp=False, ctx=None, icon=False):
-    """Shared compact embed styling: neutral info, green success, red error."""
-    e = discord.Embed(color=_response_color(title, description))
+    """Shared compact black embed styling; status is shown in the message text."""
+    e = discord.Embed(color=COLOR)
     if title:
         heading = f"# {str(title).strip().lower()}"
         e.description = heading if not description else f"{heading}\n{description}"
@@ -587,16 +593,16 @@ async def notify_member_mod_action(member, guild, moderator, action, reason="No 
             member = await bot.fetch_user(int(member))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError, TypeError):
             return False
-    action_title = str(action).strip().title()
-    description = f"**You have been {str(action).lower()} in**\n**{discord.utils.escape_markdown(guild.name)}**"
+    action_title = str(action).strip().lower()
+    description = f"# {action_title}\nYou have been **{action_title}** in **{discord.utils.escape_markdown(guild.name)}**."
     description += f"\n\n**Moderator**\n{moderator.mention if hasattr(moderator, 'mention') else moderator}"
     if duration:
         description += f"\n\n**Duration**\n{duration}"
     description += f"\n\n**Reason**\n{reason or 'No reason provided'}"
     if details:
         description += f"\n\n{details}"
-    description += f"\n\nIf you would like to dispute this punishment, contact a staff member.\n<t:{int(time.time())}:f>"
-    embed = discord.Embed(title=action_title, description=description, color=0xED4245)
+    description += "\n\nIf you would like to dispute this punishment, contact a staff member."
+    embed = discord.Embed(description=description, color=COLOR)
     try:
         # Match the reference: the thumbnail is the server's profile icon, not the target's avatar.
         server_icon = getattr(guild, "icon", None)
@@ -731,6 +737,10 @@ COMMAND_INFO = {
 
 # Extra utility commands
 COMMAND_INFO.update({
+    "customrolecount": ("Show total and custom role counts.", "customrolecount", "customrolecount", []),
+    "botcount": ("Show how many bots are in the server.", "botcount", "botcount", ["botscount"]),
+    "humancount": ("Show how many human members are in the server.", "humancount", "humancount", ["humanscount"]),
+    "servercreated": ("Show when the server was created and its age.", "servercreated", "servercreated", []),
     "serverstats": ("Show a compact server statistics overview.", "serverstats", "serverstats", []),
     "firstmessage": ("Find the oldest message in the current channel.", "firstmessage", "firstmessage", []),
     "invites": ("List server invites.", "invites", "invites", []),
@@ -816,12 +826,29 @@ CATEGORIES.extend([
 ])
 
 
+def resolve_command_path(name):
+    """Resolve a registered root command or nested group command by its full path."""
+    parts = str(name).strip().lower().split()
+    if not parts:
+        return None
+    current = bot.get_command(parts[0])
+    if current is None:
+        return None
+    for part in parts[1:]:
+        if not isinstance(current, commands.Group):
+            return None
+        current = current.get_command(part)
+        if current is None:
+            return None
+    return current
+
+
 def command_text(name):
     return f"`{name}`"
 
 
 def build_pages():
-    """Build dense, predictable command-directory pages similar in structure to modern bot browsers."""
+    """Build category-oriented command pages with strict Discord embed safety limits."""
     lookup = dict(CATEGORIES)
     page_groups = [
         ["Information"],
@@ -833,20 +860,69 @@ def build_pages():
     ]
     used = set()
     pages = []
+
+    def category_chunks(title, names):
+        result, chunk, length = [], [], 0
+        for name in names:
+            token = f"`{name}`"
+            extra = len(token) + (5 if chunk else 0)
+            if chunk and length + extra > 760:
+                result.append(f"# {title}\n" + "  ·  ".join(chunk))
+                chunk, length = [], 0
+                extra = len(token)
+            chunk.append(token)
+            length += extra
+        if chunk:
+            result.append(f"# {title}\n" + "  ·  ".join(chunk))
+        return result
+
+    def pack_group(blocks):
+        current, chars = [], 0
+        for block in blocks:
+            if current and (len(current) >= 18 or chars + len(block) > 4500):
+                pages.append("\n\n".join(current))
+                current, chars = [], 0
+            current.append(block)
+            chars += len(block)
+        if current:
+            pages.append("\n\n".join(current))
+
+    # Keep the familiar category pages instead of collapsing everything into two
+    # pages. Large groups split safely into additional pages when needed.
     for group in page_groups:
         blocks = []
         for title in group:
-            names = [name for name in lookup.get(title, []) if name in COMMAND_INFO and name not in used]
-            used.update(names)
-            if names:
-                blocks.append(f"# {title}\n" + "  ·  ".join(f"`{name}`" for name in names))
+            names = []
+            for name in lookup.get(title, []):
+                if name in used or name not in COMMAND_INFO:
+                    continue
+                resolved = resolve_command_path(name)
+                # Keep the directory useful: hide stale documentation-only entries and
+                # commands that are not actually registered in this build.
+                if resolved is None:
+                    continue
+                canonical = resolved.qualified_name.lower()
+                if canonical in used:
+                    continue
+                names.append(name)
+                used.add(name)
+                used.add(canonical)
+            blocks.extend(category_chunks(title, names))
         if blocks:
-            pages.append("\n\n".join(blocks))
+            pack_group(blocks)
 
-    leftovers = [name for name in COMMAND_INFO if name not in used]
+    leftovers = []
+    for name in COMMAND_INFO:
+        if name in used:
+            continue
+        resolved = resolve_command_path(name)
+        if resolved is None or resolved.qualified_name.lower() in used:
+            continue
+        leftovers.append(name)
+        used.add(resolved.qualified_name.lower())
     if leftovers:
-        pages.append("# More\n" + "  ·  ".join(f"`{name}`" for name in leftovers))
-    return pages
+        pack_group(category_chunks("More", leftovers))
+    return pages or ["# Commands\nNo commands are available."]
 
 
 class ServerLeaveConfirmView(discord.ui.View):
@@ -982,8 +1058,23 @@ class CommandsView(discord.ui.View):
             command_line = " ".join(lines[1:]).strip()
             names = [x.strip() for x in command_line.split("·") if x.strip()]
             total += len(names)
-            if names:
-                e.add_field(name=f"**{category}** · `{len(names)}`", value=" · ".join(names), inline=False)
+            # Discord limits each embed field to 1024 characters. The old
+            # catch-all page could exceed that limit, causing every button
+            # interaction on that page to fail as "This interaction failed".
+            chunk, chunk_len, chunk_index = [], 0, 1
+            for name in names:
+                add_len = len(name) + (3 if chunk else 0)
+                if chunk and chunk_len + add_len > 900:
+                    field_name = f"**{category}** · `{len(chunk)}`" + (f" · {chunk_index}" if chunk_index > 1 else "")
+                    e.add_field(name=field_name[:256], value=" · ".join(chunk), inline=False)
+                    chunk_index += 1
+                    chunk, chunk_len = [], 0
+                    add_len = len(name)
+                chunk.append(name)
+                chunk_len += add_len
+            if chunk:
+                field_name = f"**{category}** · `{len(chunk)}`" + (f" · {chunk_index}" if chunk_index > 1 else "")
+                e.add_field(name=field_name[:256], value=" · ".join(chunk), inline=False)
         e.description += (
             f"\n\n**prefix** `{PREFIX}`  **search** `{PREFIX}help <command>`"
             f"\n-# page {self.index + 1}/{len(self.pages)} · {total} commands"
@@ -1005,14 +1096,34 @@ class CommandsView(discord.ui.View):
             except (discord.HTTPException, discord.NotFound):
                 pass
 
+    async def change_page(self, interaction: discord.Interaction, direction: int):
+        target = max(0, min(len(self.pages) - 1, self.index + direction))
+        if target == self.index:
+            return await interaction.response.defer()
+        old_index = self.index
+        self.index = target
+        self.update_buttons()
+        try:
+            page_embed = self.embed()
+            # Defensive validation before Discord receives the payload.
+            if len(page_embed.fields) > 25 or len(page_embed) > 5900:
+                raise ValueError(f"page embed exceeds Discord limits: {len(page_embed.fields)} fields, {len(page_embed)} characters")
+            await interaction.response.edit_message(embed=page_embed, view=self)
+        except Exception as exc:
+            self.index = old_index
+            self.update_buttons()
+            print(f"commands pagination failed on page {target + 1}: {type(exc).__name__}: {exc}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("⚠️ That page couldn't load. Try `,commands` again.", ephemeral=True)
+                else:
+                    await interaction.followup.send("⚠️ That page couldn't load. Try `,commands` again.", ephemeral=True)
+            except Exception as followup_exc:
+                print(f"commands pagination error notice failed: {type(followup_exc).__name__}: {followup_exc}")
+
     @discord.ui.button(label="‹", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.index > 0:
-            self.index -= 1
-            self.update_buttons()
-            await interaction.response.edit_message(embed=self.embed(), view=self)
-        else:
-            await interaction.response.defer()
+        await self.change_page(interaction, -1)
 
     @discord.ui.button(label="1/1", style=discord.ButtonStyle.secondary, disabled=True)
     async def page(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1020,12 +1131,7 @@ class CommandsView(discord.ui.View):
 
     @discord.ui.button(label="›", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.index < len(self.pages) - 1:
-            self.index += 1
-            self.update_buttons()
-            await interaction.response.edit_message(embed=self.embed(), view=self)
-        else:
-            await interaction.response.defer()
+        await self.change_page(interaction, 1)
 
     @discord.ui.button(label="×", style=discord.ButtonStyle.secondary)
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1341,7 +1447,7 @@ async def on_message(message):
         duration = format_duration(elapsed) if "format_duration" in globals() else (f"{elapsed} second{'s' if elapsed != 1 else ''}")
         await message.channel.send(embed=discord.Embed(
             description=f"👋 {message.author.mention}: Welcome back, you were away for **{duration}**!",
-            color=0x57F287
+            color=COLOR
         ), delete_after=5)
     for uid, data in list(afk_data.items()):
         if uid != message.author.id and (f"<@{uid}>" in message.content or f"<@!{uid}>" in message.content):
@@ -1352,6 +1458,74 @@ async def on_message(message):
                 color=COLOR
             ), delete_after=8)
     await bot.process_commands(message)
+
+
+_HELP_WARNING_URL = "https://cdn.discordapp.com/emojis/743006201981173831.webp?size=44"
+_HELP_PARAMETERS = {
+    "ban": "member, delete history, reason",
+    "unban": "user ID",
+    "kick": "member, reason",
+    "mute": "member, duration, reason",
+    "unmute": "member",
+    "warn": "member, reason",
+    "warnings": "member",
+    "purge": "amount",
+    "userinfo": "member",
+    "serverinfo": "n/a",
+    "roles": "n/a",
+    "role": "member, role",
+    "removerole": "member, role",
+    "slowmode": "duration, channel",
+    "help": "command name",
+    "commands": "n/a",
+}
+_HELP_SYNTAX = {
+    "ban": ("ban (user) (delete history) <reason>", "ban jonathan 1d Threatening members"),
+}
+_HELP_PERMISSIONS = {
+    "ban": "Ban Members", "unban": "Ban Members", "kick": "Kick Members",
+    "mute": "Moderate Members", "unmute": "Moderate Members", "warn": "Moderate Members",
+    "warnings": "Moderate Members", "purge": "Manage Messages", "lock": "Manage Channels",
+    "unlock": "Manage Channels", "nuke": "Administrator", "servers": "Server Owner",
+    "maintenance": "Server Owner", "status": "Server Owner", "stream": "Server Owner",
+    "role": "Manage Roles", "removerole": "Manage Roles", "deleterole": "Manage Roles",
+    "changerole": "Manage Roles", "create": "Manage Roles / Manage Channels",
+    "autorole": "Manage Roles", "br": "Booster role access / configured overrides",
+    "ar": "Manage Channels", "autoreact": "Manage Channels",
+}
+
+def command_help_embed(cmd, display_path=None):
+    """One consistent, copyable Bleed-style help card for every ,h command."""
+    qualified = (display_path or cmd.qualified_name).strip().lower()
+    canonical = cmd.qualified_name.lower()
+    info = COMMAND_INFO.get(canonical, COMMAND_INFO.get(cmd.name, None))
+    if info:
+        description, syntax, example, _documented_aliases = info
+    else:
+        description = cmd.help or f"Run the {qualified} command."
+        syntax = f"{qualified} {cmd.signature}".strip()
+        example = syntax
+    if canonical in _HELP_SYNTAX:
+        syntax, example = _HELP_SYNTAX[canonical]
+    aliases = list(cmd.aliases or [])
+    alias_text = ", ".join(f"`{a}`" for a in aliases) if aliases else "n/a"
+    parameters = _HELP_PARAMETERS.get(canonical)
+    if parameters is None:
+        signature = (cmd.signature or "").strip()
+        parameters = ", ".join(part.strip("[]<> ") for part in signature.split()) if signature else "n/a"
+    permission = _HELP_PERMISSIONS.get(cmd.name.lower())
+    if permission is None:
+        permission = "Server permissions required" if getattr(cmd, "checks", None) else "n/a"
+    usage = f"`Syntax: {syntax} Example: {example}`"
+    e = discord.Embed(
+        description=f"**Group Command: {qualified}**\n{description}",
+        color=COLOR,
+    )
+    e.add_field(name="**Aliases**", value=alias_text, inline=False)
+    e.add_field(name="**Parameters**", value=parameters or "n/a", inline=False)
+    e.add_field(name="**Information**", value=f"[:warning~1:]({_HELP_WARNING_URL}) {permission}", inline=False)
+    e.add_field(name="**Usage**", value=usage, inline=False)
+    return e
 
 
 class GroupHelpView(discord.ui.View):
@@ -1385,25 +1559,10 @@ class GroupHelpView(discord.ui.View):
 
     def make_embed(self):
         entries = self.ordered_entries()
-        total = len(entries)
         if not entries:
             return make_embed(f"Group Command: {self.display_name}", "No subcommands are available.")
         cmd = entries[self.index]
-        info = COMMAND_INFO.get(cmd.qualified_name, COMMAND_INFO.get(cmd.name, (cmd.help or "No description available.", cmd.signature or "n/a", "n/a", cmd.aliases)))
-        description, syntax, example, aliases = info
-        alias_text = ", ".join(aliases) if aliases else "n/a"
-        parameters = cmd.signature.strip() or "n/a"
-        permissions = "Manage Channels" if cmd.name in {"exclusive", "add", "remove", "clear"} and self.group.name in {"ar", "autoresponder"} else "n/a"
-        if cmd.name in {"servers", "guilds", "maintenance", "status", "stream"}:
-            permissions = "Server Owner"
-        module = getattr(cmd, "cog_name", None) or command_module(cmd)
-        e = discord.Embed(description=f"# group command: {self.display_name.lower()} {cmd.name.lower()}\n{description}", color=COLOR)
-        e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
-        e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
-        e.add_field(name="Information", value=f"⚠️ {permissions}", inline=True)
-        e.add_field(name="Usage", value=f"```text\nSyntax: {PREFIX}{self.display_name} {syntax}\nExample: {PREFIX}{self.display_name} {example}\n```", inline=False)
-        e.description = (e.description or "") + f"\n\n-# Page {self.index + 1}/{total} ({total} entries) ∙ Module: {module}"
-        return e
+        return command_help_embed(cmd, cmd.qualified_name)
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.author_id:
@@ -1450,52 +1609,17 @@ class GroupHelpView(discord.ui.View):
 @bot.command(aliases=["h"])
 async def help(ctx, *, command_name=None):
     if command_name:
-        cmd = bot.get_command(command_name.lower().strip())
+        cmd = resolve_command_path(command_name)
         if not cmd:
-            return await ctx.send(embed=make_embed("command not found", f"I couldn't find `{PREFIX}{command_name}`.\n\nuse `{PREFIX}commands` to browse every command."))
-        display_name = command_name.strip().split()[0]
-        if isinstance(cmd, commands.Group):
-            entries = list(cmd.commands)
-            if entries:
-                view = GroupHelpView(ctx, cmd, entries, display_name)
-                msg = await ctx.send(embed=view.make_embed(), view=view)
-                view.message = msg
-                return
-        info = COMMAND_INFO.get(cmd.qualified_name, COMMAND_INFO.get(cmd.name, (cmd.help or "No description available.", cmd.signature or cmd.qualified_name, "n/a", cmd.aliases)))
-        description, syntax, example, aliases = info
-        alias_text = ", ".join(aliases) if aliases else "n/a"
-        parameters = cmd.signature.strip() or "n/a"
-        if cmd.name in {"servers", "guilds", "maintenance", "status", "stream"}:
-            permission = "⚠️ Server Owner"
-        elif cmd.name in {"ar", "autoreact", "autorole"}:
-            permission = "⚠️ Manage Channels"
-        elif getattr(cmd, "checks", None):
-            permission = "Configured server permission"
-        else:
-            permission = "n/a"
-        module = getattr(cmd, "cog_name", None) or command_module(cmd)
-        e = discord.Embed(description=(
-            f"# {cmd.qualified_name.lower()}\n{description}\n\n"
-            f"**aliases**: {alias_text or 'n/a'}\n"
-            f"**usage**: `{PREFIX}{syntax}`\n"
-            f"**example**: `{PREFIX}{example}`\n"
-            f"**permissions**: {permission}\n"
-            f"-# {module}"
-        ), color=COLOR)
-        return await ctx.send(embed=e)
+            return await ctx.send(embed=make_embed("command not found", f"I couldn't find `{PREFIX}{command_name}`.\n\nuse `{PREFIX}commands` to browse registered commands."))
+        # Every `,h` / `,help` detail now uses the same four-section layout.
+        # A group command shows its own card; nested subcommands are resolved directly.
+        return await ctx.send(embed=command_help_embed(cmd, cmd.qualified_name))
     e = directory_embed("bleeed", "command directory", ctx=ctx)
-    e.add_field(name="prefix", value=f"`{PREFIX}`", inline=True)
-    e.add_field(name="commands", value=f"`{len(bot.commands)}`", inline=True)
-    e.add_field(name="usage", value=f"`{PREFIX}help <command>`", inline=True)
-    category_order = ("moderation", "information", "utility", "fun", "owner", "lastfm", "server")
-    category_counts = {category: 0 for category in category_order}
-    for registered in bot.commands:
-        category_counts[command_module(registered)] = category_counts.get(command_module(registered), 0) + 1
-    for category in category_order:
-        count = category_counts.get(category, 0)
-        if count:
-            e.add_field(name=category, value=f"`{count} commands`", inline=True)
-    e.description += f"\n\nuse `{PREFIX}commands` to browse every command, or `{PREFIX}help <command>` for syntax, aliases, parameters, and examples."
+    e.add_field(name="**Prefix**", value=f"`{PREFIX}`", inline=True)
+    e.add_field(name="**Commands**", value=f"`{len(list(bot.walk_commands()))}`", inline=True)
+    e.add_field(name="**Usage**", value=f"`{PREFIX}h <command>`", inline=True)
+    e.description += f"\n\nuse `{PREFIX}commands` to browse registered commands, or `{PREFIX}h <command>` for aliases, parameters, permissions, and usage."
     await ctx.send(embed=e)
 
 
@@ -1615,6 +1739,22 @@ async def membercount(ctx):
         ("Bots", f"`{bots}`", True),
     ])
     await ctx.send(embed=e)
+
+@bot.command(name="botcount", aliases=["botscount"])
+async def botcount(ctx):
+    """Show the number of bots in the server."""
+    members = ctx.guild.members
+    count = sum(member.bot for member in members)
+    await ctx.send(embed=make_embed("Bot Count", f"**Bots** · `{count}`\n**Cached members** · `{len(members)}`"))
+
+
+@bot.command(name="humancount", aliases=["humanscount"])
+async def humancount(ctx):
+    """Show the number of human members in the server."""
+    members = ctx.guild.members
+    count = sum(not member.bot for member in members)
+    await ctx.send(embed=make_embed("Human Count", f"**Humans** · `{count}`\n**Cached members** · `{len(members)}`"))
+
 
 @bot.hybrid_command(name="serverstats", description="Show compact server statistics.")
 async def serverstats(ctx):
@@ -4389,10 +4529,63 @@ async def on_command_error(ctx, error):
     """Keep command failures consistent and compact across the entire prefix command registry."""
     command_name = ctx.command.qualified_name if ctx.command else "commandname"
     invalid = f"⚠️ {ctx.author.mention}: Invalid arguement use '{PREFIX}help {command_name}'"
+    # Bleed-style, command-specific usage errors for moderation commands.
+    # Keep these short and show the actual prefix syntax instead of a generic help hint.
+    mod_usage = {
+        "ban": "ban @user [reason]",
+        "unban": "unban user_id",
+        "kick": "kick @user [reason]",
+        "mute": "mute @user [duration] [reason]",
+        "to": "mute @user [duration] [reason]",
+        "unmute": "unmute @user",
+        "um": "unmute @user",
+        "warn": "warn @user [reason]",
+        "warnings": "warnings @user",
+        "quarantine": "quarantine @user [reason]",
+        "unquarantine": "unquarantine @user",
+        "tempban": "tempban @user <duration> [reason]",
+        "softban": "softban @user [delete_history_seconds] [reason]",
+        "jail": "jail @user [duration] [reason]",
+        "unjail": "unjail @user [reason]",
+        "purge": "purge [amount]",
+        "purgebots": "purgebots [amount]",
+        "purgeuser": "purgeuser @user [amount]",
+        "purge_links": "purge links [amount]",
+        "purge_webhooks": "purge webhooks [amount]",
+        "purge_humans": "purge humans [amount]",
+        "purge_bots": "purge bots [amount]",
+        "purge_embeds": "purge embeds [amount]",
+        "purge_files": "purge files [amount]",
+        "purge_images": "purge images [amount]",
+        "purge_stickers": "purge stickers [amount]",
+        "lock": "lock",
+        "unlock": "unlock",
+        "lockdown": "lockdown [#channel] [reason]",
+        "unlockdown": "unlockdown",
+        "lockdown_all": "lockdown all [reason]",
+        "lockdown_role": "lockdown role @role",
+        "unlock_all": "unlock all",
+        "banpurge": "banpurge [seconds]",
+        "unbanall": "unbanall",
+        "unbanall_cancel": "unbanall cancel",
+        "snipe": "snipe",
+        "cs": "cs",
+        "slowmode": "slowmode [seconds]",
+        "slowmode_set": "slowmode set <delay> [#channel]",
+        "slowmode_status": "slowmode status [#channel]",
+        "slowmode_on": "slowmode on [#channel] [delay]",
+        "slowmode_off": "slowmode off [#channel]",
+        "slowmodeall": "slowmodeall [seconds]",
+        "warnlist": "warnlist [amount]",
+        "jaillist": "jaillist",
+    }
     if isinstance(error, commands.CommandNotFound):
         # Unknown commands stay quiet, matching the reference bot's behavior.
         return
     if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument, commands.TooManyArguments, commands.UserInputError)):
+        usage = mod_usage.get(command_name) or mod_usage.get(ctx.command.name if ctx.command else "")
+        if usage:
+            return await ctx.send(f":warning: **{ctx.author.mention} | own**: Usage: `,{usage}`.")
         return await ctx.send(invalid)
     if isinstance(error, commands.MissingPermissions):
         missing = ", ".join(str(p) for p in error.missing_permissions)
