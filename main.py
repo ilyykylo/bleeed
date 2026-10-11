@@ -511,22 +511,61 @@ def result_embed(title, label, value, *, extra=None):
 
 
 def action_embed(message, *, added=False, removed=False):
-    """Compact Discord-style action response used for successful add/remove actions."""
-    if added:
-        icon = "✅"
-    elif removed:
-        icon = "❌"
-    else:
-        icon = ""
+    """Compact successful action response using the custom approve emoji.
+
+    Role toggle responses use their dedicated <:add:...> and <:remove:...>
+    emojis directly in the role command; generic successful actions always use
+    the approve emoji regardless of whether the action adds or removes something.
+    """
+    icon = "<:approve:1558768853058588682>"
     return discord.Embed(description=f"{icon} {message}".strip(), color=_response_color(None, message))
 
 
 def mod_success(message):
-    return discord.Embed(description=f"✅ successfully {message}", color=0x57F287)
+    return discord.Embed(description=f"<:approve:1558768853058588682> successfully {message}", color=0x57F287)
 
 
 def mod_error(message):
-    return discord.Embed(description=f"❌ {message}", color=0xED4245)
+    return discord.Embed(description=f"<:deny:1558768856552439878> {message}", color=0xED4245)
+
+
+def br_response(message, *, success=None):
+    """One-line BR action response using the same approve/deny style as moderation."""
+    text = str(message).strip()
+    if success is None:
+        lowered = text.lower()
+        failure_terms = ("couldn't", "could not", "can't", "cannot", "must be", "use `", "mention the", "only server", "doesn't have", "don't have", "not enough", "invalid", "valid 6-digit", "discord wouldn't", "discord couldn't", "my highest role", "check my", "role hierarchy", "must be below", "must be above", "already", "role could not", "you don't", "your role could not")
+        success = not any(term in lowered for term in failure_terms)
+    emoji = "<:approve:1558768853058588682>" if success else "<:deny:1558768856552439878>"
+    return discord.Embed(description=f"{emoji} {text}", color=0x57F287 if success else 0xED4245)
+
+
+async def notify_member_mod_action(member, guild, moderator, action, reason="No reason provided", *, duration=None, details=None):
+    """DM a compact, screenshot-style moderation notice; failures never undo moderation."""
+    if not hasattr(member, "send"):
+        try:
+            member = await bot.fetch_user(int(member))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError, TypeError):
+            return False
+    action_title = str(action).strip().title()
+    description = f"**You have been {str(action).lower()} in**\n**{discord.utils.escape_markdown(guild.name)}**"
+    description += f"\n\n**Moderator**\n{moderator.mention if hasattr(moderator, 'mention') else moderator}"
+    if duration:
+        description += f"\n\n**Duration**\n{duration}"
+    description += f"\n\n**Reason**\n{reason or 'No reason provided'}"
+    if details:
+        description += f"\n\n{details}"
+    description += f"\n\nIf you would like to dispute this punishment, contact a staff member.\n<t:{int(time.time())}:f>"
+    embed = discord.Embed(title=action_title, description=description, color=0xED4245)
+    try:
+        # Match the reference: the thumbnail is the server's profile icon, not the target's avatar.
+        server_icon = getattr(guild, "icon", None)
+        if server_icon:
+            embed.set_thumbnail(url=server_icon.url)
+        await member.send(embed=embed)
+        return True
+    except (discord.Forbidden, discord.HTTPException, AttributeError):
+        return False
 
 
 def role_ok(member, role_ids):
@@ -2010,6 +2049,7 @@ async def quarantine(ctx, member: discord.Member, *, reason="No reason provided"
     quarantine_data[ctx.guild.id][member.id] = saved
     save_quarantine()
     record_modlog(ctx.guild, member, "Quarantine", ctx.author, reason)
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Quarantined", reason)
     await ctx.send(embed=mod_success(f"quarantined {member.mention}"))
 
 @bot.command(aliases=["unq"])
@@ -2034,6 +2074,7 @@ async def unquarantine(ctx, member: discord.Member):
     quarantine_data[ctx.guild.id].pop(member.id, None)
     save_quarantine()
     record_modlog(ctx.guild, member, "Unquarantine", ctx.author, "Removed quarantine")
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Unquarantined", "Removed quarantine")
     await ctx.send(embed=mod_success(f"unquarantined {member.mention}"))
 
 @bot.group(name="ban", aliases=["b"], invoke_without_command=True)
@@ -2058,15 +2099,7 @@ async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
     except discord.HTTPException:
         return await ctx.send(embed=mod_error(f"couldn't ban {member.mention}"))
     record_modlog(ctx.guild, member, "Ban", ctx.author, reason, details=f"Message deletion window: {delete_seconds} seconds")
-    dm_sent = True
-    try:
-        dm_embed = make_embed(
-            "you have been banned",
-            f"You have been banned from **{ctx.guild.name}**.\n\n**Reason**\n{reason}\n\n**Moderator**\n{ctx.author}\n\nMessages from the last `{delete_seconds}` seconds were requested for deletion.",
-        )
-        await member.send(embed=dm_embed)
-    except (discord.Forbidden, discord.HTTPException):
-        dm_sent = False
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Banned", reason, details=f"Messages from the last {delete_seconds} seconds were requested for deletion.")
     await ctx.send(embed=mod_success(f"banned {member.mention}"))
 
 @bot.command(aliases=["ub"])
@@ -2084,6 +2117,7 @@ async def unban(ctx, user_id:int):
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("unban failed", "Discord returned an error while unbanning that user."))
     record_modlog(ctx.guild, user_id, "Unban", ctx.author, "Unbanned by moderator")
+    await notify_member_mod_action(user_id, ctx.guild, ctx.author, "Unbanned", "Unbanned by moderator")
     await ctx.send(embed=mod_success(f"unbanned `{user_id}`"))
 
 @bot.command(aliases=["k"])
@@ -2101,6 +2135,7 @@ async def kick(ctx, member:discord.Member,*,reason="no reason provided"):
     except discord.HTTPException:
         return await ctx.send(embed=mod_error(f"couldn't kick {member.mention}"))
     record_modlog(ctx.guild, member, "Kick", ctx.author, reason)
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Kicked", reason)
     await ctx.send(embed=mod_success(f"kicked {member.mention}"))
 
 @bot.group(name="mute", aliases=["timeout","to"], invoke_without_command=True)
@@ -2129,6 +2164,7 @@ async def mute(ctx, member: discord.Member = None, duration: str = "10m", *, rea
             pretty.append(f"{amount}{suffix}")
     label = " ".join(pretty) or "1s"
     record_modlog(ctx.guild, member, "Mute", ctx.author, reason, duration=label)
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Muted", reason, duration=label)
     await ctx.send(embed=mod_success(f"muted {member.mention} for {label}"))
 
 @bot.command(aliases=["um","untimeout","untimeoutmember"])
@@ -2146,6 +2182,7 @@ async def unmute(ctx,member:discord.Member):
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("unmute failed", "Discord returned an error while removing the timeout."))
     record_modlog(ctx.guild, member, "Unmute", ctx.author, "Removed timeout")
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Unmuted", "Removed timeout")
     await ctx.send(embed=mod_success(f"unmuted {member.mention}"))
 
 @bot.command(aliases=["w"])
@@ -2156,6 +2193,7 @@ async def warn(ctx,member:discord.Member,*,reason="no reason provided"):
         return await ctx.send(embed=make_embed("cannot warn member", "You can't warn yourself, the server owner, or someone at/above your role."))
     warning_data[ctx.guild.id][member.id].append(reason)
     record_modlog(ctx.guild, member, "Warn", ctx.author, reason)
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Warned", reason)
     await ctx.send(embed=mod_success(f"warned {member.mention}"))
 
 @bot.command()
@@ -2537,13 +2575,12 @@ async def addrole(ctx, member: discord.Member = None, role: discord.Role = None)
         return await ctx.send(embed=make_embed("error", "that role is too high for you or the bot."))
     if role in member.roles:
         await member.remove_roles(role, reason=f"role toggled off by {ctx.author}")
-        icon = "❌"
-        message = f"Removed {role.mention} from {member.mention}"
+        icon = "<:remove:1557785190183600258>"
+        message = f"Successfully removed {role.mention} from {member.mention}!"
     else:
         await member.add_roles(role, reason=f"role toggled on by {ctx.author}")
-        icon = "✅"
-        message = f"Added {role.mention} to {member.mention}"
-    # Use the matching custom emoji for each action and include the command invoker.
+        icon = "<:add:1557785192712642634>"
+        message = f"Successfully added {role.mention} to {member.mention}!"
     await ctx.send(embed=discord.Embed(
         description=f"{icon} {ctx.author.mention}: {message}",
         color=COLOR,
@@ -2689,7 +2726,7 @@ async def br(ctx, action=None, *, value=""):
     # Override management is deliberately admin-only.
     if action == "override":
         if not ctx.author.guild_permissions.administrator:
-            return await ctx.send(embed=make_embed("Booster Role", "only server administrators can manage BR overrides."))
+            return await ctx.send(embed=br_response( "only server administrators can manage BR overrides."))
         target = ctx.message.mentions[0] if ctx.message.mentions else None
         lowered = value.lower().strip()
         remove = lowered.startswith("remove ") or lowered.startswith("off ") or lowered.startswith("revoke ")
@@ -2701,40 +2738,40 @@ async def br(ctx, action=None, *, value=""):
                 except (ValueError, TypeError):
                     target = None
         if not target:
-            return await ctx.send(embed=make_embed("Booster Role", f"use `{PREFIX}br override @user` to allow a user to create a BR without boosting, or `{PREFIX}br override remove @user` to revoke it."))
+            return await ctx.send(embed=br_response( f"use `{PREFIX}br override @user` to allow a user to create a BR without boosting, or `{PREFIX}br override remove @user` to revoke it."))
         if target.bot:
-            return await ctx.send(embed=make_embed("Booster Role", "you can't give a BR override to a bot."))
+            return await ctx.send(embed=br_response( "you can't give a BR override to a bot."))
         users = br_overrides[ctx.guild.id]
         if remove:
             if target.id not in users:
-                return await ctx.send(embed=make_embed("Booster Role", f"{target.mention} doesn't have a BR override."))
+                return await ctx.send(embed=br_response( f"{target.mention} doesn't have a BR override."))
             users.discard(target.id)
             save_br_overrides()
             deleted = await delete_member_br_role(ctx.guild, target.id, reason=f"BR override removed by {ctx.author}")
             detail = "Their BR role was deleted." if deleted else "Their BR role could not be deleted automatically; check the bot's Manage Roles permission and role hierarchy."
-            return await ctx.send(embed=make_embed("Booster Role", f"BR override removed from {target.mention}. {detail}"))
+            return await ctx.send(embed=br_response( f"BR override removed from {target.mention}. {detail}"))
         users.add(target.id)
         save_br_overrides()
-        return await ctx.send(embed=make_embed("Booster Role", f"{target.mention} can now create a BR without boosting."))
+        return await ctx.send(embed=br_response( f"{target.mention} can now create a BR without boosting."))
 
     if not has_br_access(ctx.author):
         return
     if action == "create":
-        if not value.strip(): return await ctx.send(embed=make_embed("Booster Role", f"usage: `{PREFIX}br create rolename`"))
+        if not value.strip(): return await ctx.send(embed=br_response( f"usage: `{PREFIX}br create rolename`"))
         existing=ctx.guild.get_role(br_config[ctx.guild.id].get(ctx.author.id)) if br_config[ctx.guild.id].get(ctx.author.id) else None
-        if existing: return await ctx.send(embed=make_embed("Booster Role", f"you already have {existing.mention}. edit it with `{PREFIX}br color`, `{PREFIX}br icon`, or create a new one after deleting it."))
+        if existing: return await ctx.send(embed=br_response( f"you already have {existing.mention}. edit it with `{PREFIX}br color`, `{PREFIX}br icon`, or create a new one after deleting it."))
         base_id = br_base_config.get(ctx.guild.id)
         base_role = ctx.guild.get_role(base_id) if base_id else None
         me = ctx.guild.me
         if base_role and (not me or base_role >= me.top_role):
-            return await ctx.send(embed=make_embed("Booster Role", "the BR base role must be below my highest role."))
+            return await ctx.send(embed=br_response( "the BR base role must be below my highest role."))
         role=await ctx.guild.create_role(name=value.strip(), reason=f"BR role created by {ctx.author}")
         if base_role:
             try:
                 await role.edit(position=base_role.position + 1, reason=f"BR role placed above base role by {ctx.author}")
             except discord.HTTPException:
                 await role.delete(reason="BR role placement failed")
-                return await ctx.send(embed=make_embed("Booster Role", "i couldn't place the BR role above the configured base role."))
+                return await ctx.send(embed=br_response( "i couldn't place the BR role above the configured base role."))
         br_config[ctx.guild.id][ctx.author.id]=role.id; save_br_config()
         try:
             await ctx.author.add_roles(role, reason="BR role automatically assigned on creation")
@@ -2745,19 +2782,19 @@ async def br(ctx, action=None, *, value=""):
                 await role.delete(reason="BR role assignment failed")
             except discord.HTTPException:
                 pass
-            return await ctx.send(embed=make_embed("Booster Role", "the role was created, but i couldn't give it to you. Check my role hierarchy and Manage Roles permission."))
+            return await ctx.send(embed=br_response( "the role was created, but i couldn't give it to you. Check my role hierarchy and Manage Roles permission."))
         except discord.HTTPException:
-            return await ctx.send(embed=make_embed("Booster Role", "the role was created, but Discord wouldn't assign it to you. Try again."))
-        return await ctx.send(embed=make_embed("Booster Role", f"**Role**\n{role.mention} · `{role.id}`\n\n**Assigned To**\n{ctx.author.mention}"))
+            return await ctx.send(embed=br_response( "the role was created, but Discord wouldn't assign it to you. Try again."))
+        return await ctx.send(embed=br_response(f"created {role.mention}"))
     if action == "base":
         if not ctx.author.guild_permissions.administrator:
-            return await ctx.send(embed=make_embed("Booster Role", "only server administrators can set the BR base role."))
+            return await ctx.send(embed=br_response( "only server administrators can set the BR base role."))
         target = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
         if not target or target.is_default():
-            return await ctx.send(embed=make_embed("Booster Role", f"use `{PREFIX}br base @role`."))
+            return await ctx.send(embed=br_response( f"use `{PREFIX}br base @role`."))
         me = ctx.guild.me
         if not me or target >= me.top_role:
-            return await ctx.send(embed=make_embed("Booster Role", "the BR base role must be below my highest role."))
+            return await ctx.send(embed=br_response( "the BR base role must be below my highest role."))
 
         # Keep every tracked BR role above the configured base role.
         tracked = []
@@ -2766,7 +2803,7 @@ async def br(ctx, action=None, *, value=""):
             if r and not r.is_default() and r < me.top_role:
                 tracked.append((r, creator_id))
         if target.position + len(tracked) >= me.top_role.position:
-            return await ctx.send(embed=make_embed("Booster Role", "there isn't enough space above that base role for all existing BR roles. Choose a lower base role."))
+            return await ctx.send(embed=br_response( "there isn't enough space above that base role for all existing BR roles. Choose a lower base role."))
 
         # Move all existing BR roles as one hierarchy update so the base role
         # remains underneath every BR role without position-shift surprises.
@@ -2775,11 +2812,11 @@ async def br(ctx, action=None, *, value=""):
         try:
             await ctx.guild.edit_role_positions(positions=positions, reason=f"BR base role set by {ctx.author}")
         except (discord.Forbidden, discord.HTTPException):
-            return await ctx.send(embed=make_embed("Booster Role", "i couldn't move the existing BR roles above the base role. Check my Manage Roles permission."))
+            return await ctx.send(embed=br_response( "i couldn't move the existing BR roles above the base role. Check my Manage Roles permission."))
 
         br_base_config[ctx.guild.id] = target.id
         save_br_base_config()
-        return await ctx.send(embed=make_embed("Booster Role", f"**Base Role**\n{target.mention} · `{target.id}`\n\nAll existing and new BR roles are kept above this role."))
+        return await ctx.send(embed=br_response(f"base role set to {target.mention}"))
 
     if action == "list":
         entries = []
@@ -2807,42 +2844,42 @@ async def br(ctx, action=None, *, value=""):
             br_config[ctx.guild.id].pop(ctx.author.id, None)
             br_color_pairs.get(str(ctx.guild.id), {}).pop(str(ctx.author.id), None)
             save_br_config(); save_br_color_pairs()
-            return await ctx.send(embed=make_embed("Booster Role", f"you don't have a BR role. Create one with `{PREFIX}br create <rolename>`."))
+            return await ctx.send(embed=br_response( f"you don't have a BR role. Create one with `{PREFIX}br create <rolename>`."))
         if role >= ctx.guild.me.top_role:
-            return await ctx.send(embed=make_embed("Booster Role", "my highest role must be above your BR role."))
+            return await ctx.send(embed=br_response( "my highest role must be above your BR role."))
         try:
             await role.delete(reason=f"BR role deleted by {ctx.author}")
         except discord.Forbidden:
-            return await ctx.send(embed=make_embed("Booster Role", "i couldn't delete your BR role. Check my Manage Roles permission."))
+            return await ctx.send(embed=br_response( "i couldn't delete your BR role. Check my Manage Roles permission."))
         except discord.HTTPException:
-            return await ctx.send(embed=make_embed("Booster Role", "Discord couldn't delete your BR role. Try again."))
+            return await ctx.send(embed=br_response( "Discord couldn't delete your BR role. Try again."))
         br_config[ctx.guild.id].pop(ctx.author.id, None)
         br_color_pairs.get(str(ctx.guild.id), {}).pop(str(ctx.author.id), None)
         save_br_config(); save_br_color_pairs()
-        return await ctx.send(embed=make_embed("Booster Role", "your BR role has been deleted."))
+        return await ctx.send(embed=br_response( "your BR role has been deleted."))
     if action in {"help","settings"}: return await ctx.send(embed=make_embed("Booster Role", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br colour <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br icon <emoji>` — use any Unicode/custom emoji (animated custom emojis become still)\n`{PREFIX}br delete` — delete your BR role\n`{PREFIX}br list` — list BR roles and their creators\n`{PREFIX}br share @user` — ask a user to accept your role\n`{PREFIX}br override @user` — admin: let a user create without boosting\n`{PREFIX}br override remove @user` — admin: revoke an override" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
-    if not role: return await ctx.send(embed=make_embed("Booster Role", f"create your role first with `{PREFIX}br create <rolename>`."))
-    if role >= ctx.guild.me.top_role: return await ctx.send(embed=make_embed("Booster Role", "my highest role must be above your BR role."))
+    if not role: return await ctx.send(embed=br_response( f"create your role first with `{PREFIX}br create <rolename>`."))
+    if role >= ctx.guild.me.top_role: return await ctx.send(embed=br_response( "my highest role must be above your BR role."))
     if action in {"name", "rename"}:
         new_name = value.strip()
         if not new_name:
-            return await ctx.send(embed=make_embed("Booster Role", f"use `{PREFIX}br name <rolename>`."))
+            return await ctx.send(embed=br_response( f"use `{PREFIX}br name <rolename>`."))
         if len(new_name) > 100:
-            return await ctx.send(embed=make_embed("Booster Role", "role names can be up to 100 characters."))
+            return await ctx.send(embed=br_response( "role names can be up to 100 characters."))
         try:
             edited = await role.edit(name=new_name, reason=f"BR role renamed by {ctx.author}")
         except discord.Forbidden:
-            return await ctx.send(embed=make_embed("Booster Role", "i couldn't rename that role. Check my role hierarchy."))
+            return await ctx.send(embed=br_response( "i couldn't rename that role. Check my role hierarchy."))
         except discord.HTTPException:
-            return await ctx.send(embed=make_embed("Booster Role", "Discord couldn't rename that role."))
+            return await ctx.send(embed=br_response( "Discord couldn't rename that role."))
         return await ctx.send(embed=make_embed("BR role renamed", f"**Role**\n{edited.mention} · `{edited.id}`\n\n**New Name**\n`{edited.name}`"))
     if action in {"color","colour"}:
         parts = value.strip().split()
         if len(parts) not in {1, 2}:
-            return await ctx.send(embed=make_embed("Booster Role", "use `,br color #hexcode` or `,br color #hexcode #hexcode`."))
+            return await ctx.send(embed=br_response( "use `,br color #hexcode` or `,br color #hexcode #hexcode`."))
         parsed = [parse_color(part) for part in parts]
         if any(color is None for color in parsed):
-            return await ctx.send(embed=make_embed("Booster Role", "use valid 6-digit hex colors such as `#efcead #c49a6c`."))
+            return await ctx.send(embed=br_response( "use valid 6-digit hex colors such as `#efcead #c49a6c`."))
 
         def fmt_hex(value):
             return value if value.startswith("#") else f"#{value}"
@@ -2880,7 +2917,7 @@ async def br(ctx, action=None, *, value=""):
     if action == "icon":
         icon_value = value.strip()
         if not icon_value:
-            return await ctx.send(embed=make_embed("Booster Role", "use `,br icon <emoji>` — Unicode emojis, custom emojis, and animated custom emojis are supported."))
+            return await ctx.send(embed=br_response( "use `,br icon <emoji>` — Unicode emojis, custom emojis, and animated custom emojis are supported."))
 
         # Custom Discord emoji: download it and send the image bytes to Discord.
         # Animated custom emojis are converted to the first frame so the role icon
@@ -2890,22 +2927,22 @@ async def br(ctx, action=None, *, value=""):
             if custom_emoji:
                 icon_bytes = await br_icon_bytes_from_custom_emoji(custom_emoji)
                 if not icon_bytes:
-                    return await ctx.send(embed=make_embed("Booster Role", "i couldn't download or convert that custom emoji."))
+                    return await ctx.send(embed=br_response( "i couldn't download or convert that custom emoji."))
                 await role.edit(display_icon=icon_bytes, reason=f"BR role icon changed by {ctx.author}")
             else:
                 # Pass the Unicode emoji directly. This covers normal Apple/Android
                 # emoji, skin tones, flags, ZWJ emoji, and other Unicode sequences.
                 await role.edit(display_icon=icon_value, reason=f"BR role icon changed by {ctx.author}")
         except (discord.Forbidden, discord.HTTPException, ValueError, TypeError):
-            return await ctx.send(embed=make_embed("Booster Role", "Discord couldn't use that emoji as a role icon. Make sure the role is below my highest role and the server supports role icons."))
-        return await ctx.send(embed=make_embed("Booster Role", f"**Icon**\n{icon_value}"))
+            return await ctx.send(embed=br_response( "Discord couldn't use that emoji as a role icon. Make sure the role is below my highest role and the server supports role icons."))
+        return await ctx.send(embed=br_response("role icon updated"))
     if action == "share":
         target=ctx.message.mentions[0] if ctx.message.mentions else None
-        if not target: return await ctx.send(embed=make_embed("Booster Role", "mention the user you want to share the role with."))
-        if target.bot: return await ctx.send(embed=make_embed("Booster Role", "you can't share a BR role with a bot."))
+        if not target: return await ctx.send(embed=br_response( "mention the user you want to share the role with."))
+        if target.bot: return await ctx.send(embed=br_response( "you can't share a BR role with a bot."))
         view=BRShareView(ctx.author.id,target.id,role.id)
         return await ctx.send(f"{target.mention}, **{ctx.author.display_name}** wants to share **{role.name}** with you. Do you want it?", view=view)
-    return await ctx.send(embed=make_embed("Booster Role", f"use `{PREFIX}br help` to see the available commands."))
+    return await ctx.send(embed=br_response(f"invalid usage · `{PREFIX}br help`", success=False))
 
 @bot.hybrid_group(name="vanity", invoke_without_command=True, description="Configure the /bleeed custom-status role and embed.")
 @commands.has_permissions(manage_roles=True)
@@ -4296,23 +4333,23 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.MissingRequiredArgument):
-        return await ctx.send(embed=make_embed("missing argument", f"Use `{PREFIX}help {ctx.command.qualified_name}` for the correct syntax."))
+        return await ctx.send(embed=mod_error(f"invalid usage · `{PREFIX}help {ctx.command.qualified_name}`"))
     if isinstance(error, commands.BadArgument):
-        return await ctx.send(embed=make_embed("invalid argument", f"I couldn't find that member, role, channel, or number. Use `{PREFIX}help {ctx.command.qualified_name}`."))
+        return await ctx.send(embed=mod_error(f"invalid argument · `{PREFIX}help {ctx.command.qualified_name}`"))
     if isinstance(error, commands.MissingPermissions):
-        return await ctx.send(embed=make_embed("no permission", "You don't have the Discord permission required for this command."))
+        return await ctx.send(embed=mod_error("you don't have permission to use this command"))
     if isinstance(error, commands.BotMissingPermissions):
-        return await ctx.send(embed=make_embed("bot permission missing", "I don't have the Discord permission required for this command."))
+        return await ctx.send(embed=mod_error("missing bot permission"))
     if isinstance(error, commands.CommandOnCooldown):
-        return await ctx.send(embed=make_embed("slow down", f"Try again <t:{int(time.time()+error.retry_after)}:R>."))
+        return await ctx.send(embed=mod_error(f"try again <t:{int(time.time()+error.retry_after)}:R>"))
     if isinstance(error, commands.CheckFailure) and str(error) == "command disabled in this channel":
-        return await ctx.send(embed=make_embed("command disabled", f"`{PREFIX}{ctx.command.qualified_name}` is disabled in this channel."), delete_after=5)
+        return await ctx.send(embed=mod_error(f"`{PREFIX}{ctx.command.qualified_name}` is disabled here"), delete_after=5)
     if isinstance(error, commands.CommandInvokeError):
         original=error.original
         print(f"Command error in {ctx.command}: {original!r}")
         if isinstance(original, discord.Forbidden):
-            return await ctx.send(embed=make_embed("discord denied the action", "Check my permissions and make sure my bot role is high enough."))
-        return await ctx.send(embed=make_embed("command failed", "Something went wrong while running that command. Check the console for details."))
+            return await ctx.send(embed=mod_error("discord denied the action · check permissions and role hierarchy"))
+        return await ctx.send(embed=mod_error("command failed · try again"))
     print(f"Unhandled command error in {ctx.command}: {error!r}")
 
 if not TOKEN:
@@ -4792,6 +4829,7 @@ async def tempban(ctx, member: discord.Member, duration: str, *, reason="no reas
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("tempban failed", "Discord denied the ban."))
     record_modlog(ctx.guild, uid, "Tempban", ctx.author, f"{reason} (duration {duration})")
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Temporarily banned", reason, duration=duration)
     await ctx.send(embed=make_embed("member temporarily banned", f"**User**\n`{uid}`\n\n**Duration**\n`{duration}`\n\n**Reason**\n{reason}"))
     async def expire_tempban():
         await asyncio.sleep(seconds)
@@ -4814,6 +4852,7 @@ async def softban(ctx, member: discord.Member, delete_history: int = 86400, *, r
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("softban failed", "Discord denied the action."))
     record_modlog(ctx.guild, member.id, "Softban", ctx.author, reason)
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Softbanned", reason, details=f"Message history deletion requested: {seconds} seconds.")
     await ctx.send(embed=make_embed("member softbanned", f"**User**\n`{member.id}`\n\n**Message history deleted**\n`{seconds}` seconds\n\n**Reason**\n{reason}"))
 
 @bot.command(name="timeoutlist", aliases=["timeout-list"])
@@ -4853,6 +4892,7 @@ async def jail(ctx, member: discord.Member, duration: str = "10m", *, reason="no
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("jail failed", "Discord denied the role change."))
     record_modlog(ctx.guild, member, "Jail", ctx.author, reason)
+    await notify_member_mod_action(member, ctx.guild, ctx.author, "Jailed", reason, duration=duration)
     await ctx.send(embed=make_embed("member jailed", f"{member.mention} was jailed for `{duration}`.\n\n**Reason**\n{reason}"))
     async def release():
         await asyncio.sleep(seconds)
@@ -6156,8 +6196,8 @@ const $=id=>document.getElementById(id);let data={};async function api(path,opts
 function updatePreview(){ $('ptitle').textContent=$('title').value||''; $('pdesc').textContent=$('description').value||''; $('preview').style.borderLeftColor=$('color').value||'#000001'}['title','description','color'].forEach(id=>$(id).addEventListener('input',updatePreview));
 function fillChannels(){const g=data.guilds.find(x=>x.id===$('guild').value);$('channel').innerHTML='';(g?.channels||[]).forEach(c=>{let o=document.createElement('option');o.value=c.id;o.textContent='# '+c.name;$('channel').appendChild(o)})}
 async function init(){try{data=await api('/api/data');$('guild').innerHTML='';data.guilds.forEach(g=>{let o=document.createElement('option');o.value=g.id;o.textContent=g.name;$('guild').appendChild(o)});$('guild').addEventListener('change',fillChannels);fillChannels();}catch(e){$('notice').textContent=e.message}}
-$('send').onclick=async()=>{try{await api('/api/send-embed',{method:'POST',body:JSON.stringify({guild:$('guild').value,channel:$('channel').value,title:$('title').value,description:$('description').value,color:$('color').value,image:$('image').value})});$('notice').textContent='✅ Embed sent.'}catch(e){$('notice').textContent='❌ '+e.message}};
-$('sendplain').onclick=async()=>{try{await api('/api/send-message',{method:'POST',body:JSON.stringify({guild:$('guild').value,channel:$('channel').value,content:$('plain').value})});$('notice').textContent='✅ Message sent.'}catch(e){$('notice').textContent='❌ '+e.message}};init();
+$('send').onclick=async()=>{try{await api('/api/send-embed',{method:'POST',body:JSON.stringify({guild:$('guild').value,channel:$('channel').value,title:$('title').value,description:$('description').value,color:$('color').value,image:$('image').value})});$('notice').textContent='<:approve:1558768853058588682> Embed sent.'}catch(e){$('notice').textContent='<:deny:1558768856552439878> '+e.message}};
+$('sendplain').onclick=async()=>{try{await api('/api/send-message',{method:'POST',body:JSON.stringify({guild:$('guild').value,channel:$('channel').value,content:$('plain').value})});$('notice').textContent='<:approve:1558768853058588682> Message sent.'}catch(e){$('notice').textContent='<:deny:1558768856552439878> '+e.message}};init();
 </script></body></html>"""
 
 async def start_dashboard():
