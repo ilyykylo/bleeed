@@ -17,6 +17,7 @@ BOT_OWNER_ID = 1401864973923389465
 # 1555566624185258105 -> warn, mute, kick
 # 1555566658100273237 -> warn, mute, kick
 BAN_ROLE = 1555623587879063613
+BAN_ROLES = {1555623587879063613, 1555566658100273237}
 MUTE_ROLES = {
     1555623587879063613,
     1555566558766436452,
@@ -512,20 +513,20 @@ def result_embed(title, label, value, *, extra=None):
 def action_embed(message, *, added=False, removed=False):
     """Compact Discord-style action response used for successful add/remove actions."""
     if added:
-        icon = "<:add:1557785192712642634>"
+        icon = "✅"
     elif removed:
-        icon = "<:remove:1557785190183600258>"
+        icon = "❌"
     else:
         icon = ""
     return discord.Embed(description=f"{icon} {message}".strip(), color=_response_color(None, message))
 
 
 def mod_success(message):
-    return discord.Embed(description=f"<:add:1557785192712642634> successfully {message}", color=0x57F287)
+    return discord.Embed(description=f"✅ successfully {message}", color=0x57F287)
 
 
 def mod_error(message):
-    return discord.Embed(description=f"<:remove:1557785190183600258> error: {message}", color=0xED4245)
+    return discord.Embed(description=f"❌ {message}", color=0xED4245)
 
 
 def role_ok(member, role_ids):
@@ -1383,12 +1384,14 @@ async def help(ctx, *, command_name=None):
         else:
             permission = "n/a"
         module = getattr(cmd, "cog_name", None) or command_module(cmd)
-        e = discord.Embed(description=f"# command: {cmd.qualified_name.lower()}\n{description}", color=COLOR)
-        e.add_field(name="Aliases", value=alias_text or "n/a", inline=True)
-        e.add_field(name="Parameters", value=parameters or "n/a", inline=True)
-        e.add_field(name="Information", value=permission, inline=True)
-        e.add_field(name="Usage", value=f"```text\nSyntax: {PREFIX}{syntax}\nExample: {PREFIX}{example}\n```", inline=False)
-        e.description = (e.description or "") + f"\n\n-# Page 1/1 (1 entry) ∙ Module: {module}"
+        e = discord.Embed(description=(
+            f"# {cmd.qualified_name.lower()}\n{description}\n\n"
+            f"**aliases**: {alias_text or 'n/a'}\n"
+            f"**usage**: `{PREFIX}{syntax}`\n"
+            f"**example**: `{PREFIX}{example}`\n"
+            f"**permissions**: {permission}\n"
+            f"-# {module}"
+        ), color=COLOR)
         return await ctx.send(embed=e)
     e = directory_embed("bleeed", "command directory", ctx=ctx)
     e.add_field(name="prefix", value=f"`{PREFIX}`", inline=True)
@@ -2035,7 +2038,7 @@ async def unquarantine(ctx, member: discord.Member):
 
 @bot.group(name="ban", aliases=["b"], invoke_without_command=True)
 async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
-    if not role_ok(ctx.author, {BAN_ROLE}):
+    if not role_ok(ctx.author, BAN_ROLES):
         return await ctx.send(embed=mod_error("couldn't ban that user — missing permission"))
     if not bot_can(ctx, "ban_members"):
         return await ctx.send(embed=mod_error("couldn't ban that user — missing bot permission"))
@@ -2068,7 +2071,7 @@ async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
 
 @bot.command(aliases=["ub"])
 async def unban(ctx, user_id:int):
-    if not role_ok(ctx.author, {BAN_ROLE}):
+    if not role_ok(ctx.author, BAN_ROLES):
         return await ctx.send(embed=mod_error("couldn't ban that user — missing permission"))
     if not bot_can(ctx, "ban_members"):
         return await ctx.send(embed=make_embed("bot permission missing", "I need **Ban Members** permission to unban users."))
@@ -2101,23 +2104,32 @@ async def kick(ctx, member:discord.Member,*,reason="no reason provided"):
     await ctx.send(embed=mod_success(f"kicked {member.mention}"))
 
 @bot.group(name="mute", aliases=["timeout","to"], invoke_without_command=True)
-async def mute(ctx,member:discord.Member=None,minutes:int=10,*,reason="no reason provided"):
+async def mute(ctx, member: discord.Member = None, duration: str = "10m", *, reason="no reason provided"):
     if not role_ok(ctx.author, MUTE_ROLES):
         return await ctx.send(embed=mod_error("couldn't mute that user — missing permission"))
     if not bot_can(ctx, "moderate_members"):
         return await ctx.send(embed=mod_error("couldn't mute that user — missing bot permission"))
-    if minutes < 1 or minutes > 40320:
-        return await ctx.send(embed=make_embed("invalid duration", "Mute duration must be between **1 minute** and **28 days**."))
+    if member is None:
+        return await ctx.send(embed=mod_error(f"usage: `{PREFIX}mute @user 7d [reason]`"))
+    seconds = parse_duration(duration)
+    if seconds is None or seconds < 60 or seconds > 28 * 86400:
+        return await ctx.send(embed=mod_error("duration must be 1m–28d (examples: 30m, 12h, 7d)"))
     if not target_ok(ctx, member):
-        return await ctx.send(embed=make_embed("cannot mute member", "The target must be below my highest role and below your highest role."))
+        return await ctx.send(embed=mod_error("couldn't mute that user — check role hierarchy"))
     try:
-        await member.timeout(timedelta(minutes=minutes), reason=reason)
-    except discord.Forbidden:
+        await member.timeout(timedelta(seconds=seconds), reason=reason)
+    except (discord.Forbidden, discord.HTTPException):
         return await ctx.send(embed=mod_error(f"couldn't mute {member.mention}"))
-    except discord.HTTPException:
-        return await ctx.send(embed=mod_error(f"couldn't mute {member.mention}"))
-    record_modlog(ctx.guild, member, "Mute", ctx.author, reason, duration=f"{minutes} minutes")
-    await ctx.send(embed=mod_success(f"muted {member.mention} for {minutes} minutes"))
+    units = (("d", 86400), ("h", 3600), ("m", 60), ("s", 1))
+    remaining = seconds
+    pretty = []
+    for suffix, unit in units:
+        amount, remaining = divmod(remaining, unit)
+        if amount:
+            pretty.append(f"{amount}{suffix}")
+    label = " ".join(pretty) or "1s"
+    record_modlog(ctx.guild, member, "Mute", ctx.author, reason, duration=label)
+    await ctx.send(embed=mod_success(f"muted {member.mention} for {label}"))
 
 @bot.command(aliases=["um","untimeout","untimeoutmember"])
 async def unmute(ctx,member:discord.Member):
@@ -2257,7 +2269,7 @@ class SnipeView(discord.ui.View):
 @bot.command(aliases=["cs"])
 async def clearsnipes(ctx):
     # Only the same moderation roles used by warn/mute/kick/ban can clear snipes.
-    if not role_ok(ctx.author, WARN_ROLES | MUTE_ROLES | KICK_ROLES | {BAN_ROLE}):
+    if not role_ok(ctx.author, WARN_ROLES | MUTE_ROLES | KICK_ROLES | BAN_ROLES):
         return
     if not hasattr(bot, "_snipes"):
         bot._snipes = defaultdict(lambda: deque(maxlen=100))
@@ -2325,107 +2337,25 @@ async def filter(ctx,action="list",*,word=""):
 async def security(ctx):
     a=antinuke_config[ctx.guild.id]; r=antiraid_config[ctx.guild.id]; await ctx.send(embed=make_embed("security",f"**antinuke:** `{a['enabled']}` • `{a['threshold']}` / `{a['window']}s` • `{a['action']}`\n**antiraid:** `{r['enabled']}` • `{r['threshold']}` / `{r['window']}s`\n**filter:** `{filter_enabled[ctx.guild.id]}`"))
 
-@bot.command(name="8ball", aliases=["8", "ball"])
-async def eightball(ctx, *, question):
-    answer = random.choice(["yes.", "no.", "probably.", "maybe.", "ask again later.", "definitely.", "the stars say yes.", "not looking good."])
-    await ctx.send(embed=result_embed("8ball", "Question", question, extra=[("Answer", f"**{answer}**")]))
 
-@bot.command()
-async def coinflip(ctx):
-    result = random.choice(["heads", "tails"])
-    await ctx.send(embed=result_embed("Coinflip", "Result", f"**{result}**"))
 
-@bot.command()
-async def roll(ctx, sides: int = 6):
-    sides = max(2, min(sides, 100000))
-    result = random.randint(1, sides)
-    await ctx.send(embed=result_embed("Roll", "Result", f"**{result}**", extra=[("Sides", f"`{sides}`")]))
 
-@bot.command()
-async def choose(ctx, *, choices):
-    options = [x.strip() for x in choices.split("|") if x.strip()]
-    if len(options) < 2:
-        return await ctx.send(embed=result_embed("Choose", "Usage", f"`{PREFIX}choose option 1 | option 2`"))
-    result = random.choice(options)
-    await ctx.send(embed=result_embed("Choose", "Selected", f"**{result}**", extra=[("Options", " · ".join(f"`{x}`" for x in options[:10]))]))
 
-@bot.command()
-async def rps(ctx, choice):
-    choice = choice.lower(); options = ["rock", "paper", "scissors"]
-    if choice not in options:
-        return await ctx.send(embed=result_embed("Rock Paper Scissors", "Usage", f"`{PREFIX}rps rock|paper|scissors`"))
-    botc = random.choice(options)
-    result = "tie" if choice == botc else "you win" if (choice, botc) in [("rock", "scissors"), ("paper", "rock"), ("scissors", "paper")] else "you lose"
-    await ctx.send(embed=result_embed("Rock Paper Scissors", "Result", f"**{result}**", extra=[("You", choice), ("bleeed", botc)]))
 
-@bot.command()
-async def joke(ctx):
-    joke_text = random.choice(["why did the computer get cold? it left its windows open.", "I told my PC I needed a break. now it won't stop sending me vacation ads.", "what do you call a sleeping bull? a bulldozer.", "why was the server cold? it left its cache open."])
-    await ctx.send(embed=result_embed("Joke", "Joke", joke_text))
 
-@bot.command()
-async def fact(ctx):
-    fact_text = random.choice(["octopuses have three hearts.", "bananas are botanically berries.", "a day on Venus is longer than its year.", "honey can stay edible for a very long time when stored properly."])
-    await ctx.send(embed=result_embed("Fact", "Did you know?", fact_text))
 
-@bot.command()
-async def rate(ctx, *, thing):
-    score = random.randint(0, 100)
-    await ctx.send(embed=result_embed("Rate", "Subject", thing, extra=[("Score", f"**{score}/100**")]))
 
-@bot.command()
-async def compliment(ctx, member: discord.Member=None):
-    member = member or ctx.author
-    await ctx.send(embed=result_embed("Compliment", "Target", member.mention, extra=[("Message", "you're genuinely a great person to have around.")]))
 
-@bot.command()
-async def wyr(ctx, *, question):
-    await ctx.send(embed=result_embed("Would You Rather", "Question", question))
 
-@bot.command()
-async def reverse(ctx, *, text):
-    await ctx.send(embed=result_embed("Reverse", "Result", text[::-1]))
 
-@bot.command()
-async def hug(ctx, member: discord.Member=None):
-    member = member or ctx.author
-    await ctx.send(embed=result_embed("Hug", "Action", f"{ctx.author.mention} gave {member.mention} a hug ♡"))
 
-@bot.command()
-async def pat(ctx, member: discord.Member=None):
-    member = member or ctx.author
-    await ctx.send(embed=result_embed("Pat", "Action", f"{ctx.author.mention} gave {member.mention} a pat ♡"))
 
-@bot.command()
-async def love(ctx, member: discord.Member=None):
-    member = member or ctx.author
-    await ctx.send(embed=result_embed("Love", "Action", f"{ctx.author.mention} sent some love to {member.mention} ♡"))
 
-@bot.command()
-async def howlucky(ctx):
-    await ctx.send(embed=result_embed("Luck", "Today's luck", f"**{random.randint(0,100)}%**"))
 
-@bot.command()
-async def ship(ctx, a: discord.Member, b: discord.Member):
-    score = random.randint(0,100)
-    await ctx.send(embed=result_embed("Ship", "Pair", f"{a.mention} × {b.mention}", extra=[("Compatibility", f"**{score}%**")]))
 
-@bot.command()
-async def shipname(ctx, a: discord.Member, b: discord.Member):
-    n = (a.display_name[:max(1, len(a.display_name)//2)] + b.display_name[max(1, len(b.display_name)//2):]).replace(" ", "")
-    await ctx.send(embed=result_embed("Ship Name", "Pair", f"{a.mention} × {b.mention}", extra=[("Name", f"**{n}**")]))
 
-@bot.command()
-async def truth(ctx):
-    await ctx.send(embed=result_embed("Truth", "Question", random.choice(["what is a hobby you wish you were better at?", "what is the funniest thing you've seen today?", "what game could you play for hours?"])))
 
-@bot.command()
-async def dare(ctx):
-    await ctx.send(embed=result_embed("Dare", "Challenge", random.choice(["send a funny emoji in chat.", "change your status for 5 minutes.", "say something nice about the next person who messages you."])))
 
-@bot.command()
-async def wouldyou(ctx):
-    await ctx.send(embed=result_embed("Would You Rather", "Question", random.choice(["would you rather always have perfect Wi-Fi or perfect battery life?", "would you rather have unlimited games or unlimited snacks?", "would you rather teleport or pause time?"])))
 
 @bot.command(aliases=["afkset"])
 async def afk(ctx,*,reason="AFK"): afk_data[ctx.author.id]={"name":str(ctx.author),"reason":reason}; await ctx.send(embed=make_embed("afk",f"{ctx.author.mention} is now AFK: {reason}"))
@@ -2607,11 +2537,11 @@ async def addrole(ctx, member: discord.Member = None, role: discord.Role = None)
         return await ctx.send(embed=make_embed("error", "that role is too high for you or the bot."))
     if role in member.roles:
         await member.remove_roles(role, reason=f"role toggled off by {ctx.author}")
-        icon = "<:remove:1557785190183600258>"
+        icon = "❌"
         message = f"Removed {role.mention} from {member.mention}"
     else:
         await member.add_roles(role, reason=f"role toggled on by {ctx.author}")
-        icon = "<:add:1557785192712642634>"
+        icon = "✅"
         message = f"Added {role.mention} to {member.mention}"
     # Use the matching custom emoji for each action and include the command invoker.
     await ctx.send(embed=discord.Embed(
@@ -3425,11 +3355,6 @@ async def countdown(ctx, seconds: int = 10):
         else:
             await msg.edit(embed=make_embed("countdown", f"**{left}** seconds remaining."))
 
-@bot.command()
-async def dice(ctx, count: int = 1, sides: int = 6):
-    count=max(1,min(count,20)); sides=max(2,min(sides,1000))
-    rolls=[random.randint(1,sides) for _ in range(count)]
-    await ctx.send(embed=make_embed("dice", f"**Rolls**\n" + " · ".join(f"`{x}`" for x in rolls) + f"\n\n**Total**\n`{sum(rolls)}`"))
 
 @bot.command()
 async def randomuser(ctx, role: discord.Role = None):
@@ -3786,13 +3711,32 @@ async def massrole(ctx, action="add", role: discord.Role = None):
     await ctx.send(embed=make_embed("mass role", f"changed `{changed}` members."))
 
 
-@bot.command(aliases=["sayembed"])
-async def embed(ctx, *, text):
-    if not v53_can_manage(ctx): return
-    e = make_embed(None, text[:4000])
-    try: await ctx.message.delete()
-    except discord.HTTPException: pass
-    await ctx.send(embed=e)
+@bot.command(aliases=["sayembed", "em"])
+async def embed(ctx, *, text=None):
+    """Send a minimal custom embed. Format: ,embed title | description | #hex | image URL"""
+    if not (ctx.author.guild_permissions.manage_messages or ctx.author.guild_permissions.administrator):
+        return await ctx.send(embed=mod_error("you need Manage Messages to use embed."), delete_after=5)
+    if not text:
+        return await ctx.send(embed=make_embed("embed builder", f"`{PREFIX}embed title | description | #000001 | image URL`\nColor and image URL are optional."), delete_after=12)
+    parts = [part.strip() for part in text.split("|", 3)]
+    title = parts[0][:256] if parts[0] else None
+    description = parts[1][:4000] if len(parts) > 1 and parts[1] else None
+    e = discord.Embed(title=title, description=description, color=COLOR)
+    if len(parts) > 2 and parts[2]:
+        try: e.color = discord.Color(int(parts[2].replace("#", ""), 16))
+        except ValueError: return await ctx.send(embed=mod_error("invalid color. use a hex value like `#efcead`."), delete_after=5)
+    if len(parts) > 3 and parts[3]:
+        from urllib.parse import urlparse
+        parsed = urlparse(parts[3])
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return await ctx.send(embed=mod_error("image must be a valid http(s) URL."), delete_after=5)
+        e.set_image(url=parts[3])
+    try:
+        await ctx.send(embed=e)
+        await ctx.message.delete()
+    except discord.Forbidden:
+        return await ctx.send(embed=mod_error("couldn't delete your command. check Manage Messages."), delete_after=5)
+
 
 
 @bot.command()
@@ -3898,11 +3842,6 @@ async def hex(ctx, value:str=None):
     if not re.fullmatch(r'[0-9a-fA-F]{6}',value): return await ctx.send(embed=make_embed("hex",f"Use `{PREFIX}hex #5865F2`"))
     rgb=tuple(int(value[i:i+2],16) for i in (0,2,4)); await ctx.send(embed=result_embed("Hex","Color",f"`#{value.upper()}`",extra=[("RGB",f"`{rgb[0]}, {rgb[1]}, {rgb[2]}`"),("Integer",f"`{int(value,16)}`")]))
 
-@bot.command()
-async def randomchoice(ctx, *, choices):
-    opts=[x.strip() for x in choices.split('|') if x.strip()]
-    if len(opts)<2: return await ctx.send(embed=make_embed("random choice",f"Use `{PREFIX}randomchoice one | two | three`"))
-    await ctx.send(embed=result_embed("Random Choice","Selected",f"**{random.choice(opts)}**"))
 
 @bot.command()
 async def randommember(ctx, role:discord.Role=None):
@@ -4840,7 +4779,7 @@ COMMAND_INFO.update({
 
 @bot.command(name="tempban", aliases=["tban"])
 async def tempban(ctx, member: discord.Member, duration: str, *, reason="no reason provided"):
-    if not (ctx.author.guild_permissions.ban_members or role_ok(ctx.author, {BAN_ROLE})):
+    if not (ctx.author.guild_permissions.ban_members or role_ok(ctx.author, BAN_ROLES)):
         return await ctx.send(embed=make_embed("no permission", "you need Ban Members or the configured ban role."))
     seconds = parse_duration(duration)
     if not seconds:
@@ -4864,7 +4803,7 @@ async def tempban(ctx, member: discord.Member, duration: str, *, reason="no reas
 
 @bot.command(name="softban")
 async def softban(ctx, member: discord.Member, delete_history: int = 86400, *, reason="no reason provided"):
-    if not (ctx.author.guild_permissions.ban_members or role_ok(ctx.author, {BAN_ROLE})):
+    if not (ctx.author.guild_permissions.ban_members or role_ok(ctx.author, BAN_ROLES)):
         return await ctx.send(embed=make_embed("no permission", "you need Ban Members or the configured ban role."))
     if not bot_can(ctx, "ban_members") or not target_ok(ctx, member):
         return await ctx.send(embed=make_embed("cannot softban", "check bot permissions and role hierarchy."))
@@ -6033,6 +5972,13 @@ async def start_reminder_worker():
     asyncio.create_task(worker())
 
 @bot.listen("on_member_remove")
+async def delete_br_role_when_member_leaves(member):
+    # Personal booster roles are server assets and should not remain orphaned
+    # after their creator leaves. Clear stale ownership even if the role is gone.
+    await delete_member_br_role(member.guild, member.id, reason=f"BR role deleted because {member} left the server")
+
+
+@bot.listen("on_member_remove")
 async def save_member_roles_before_leave(member):
     if member.bot: return
     data=_load_json_config("role_backup.json",{}); data.setdefault(str(member.guild.id),{})[str(member.id)]=[r.id for r in member.roles if not r.is_default() and not r.managed]; _save_json_file("role_backup.json",data)
@@ -6194,4 +6140,88 @@ COMMAND_INFO.update({
     "nuke": ("Recreate the current text channel after a confirmation prompt. Administrators only.", "nuke", "nuke", []),
 })
 
-bot.run(TOKEN)
+# Optional password-protected web dashboard. Configure DASHBOARD_PASSWORD in FadeHost.
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+_dashboard_runner = None
+
+_DASHBOARD_HTML = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>bleeed dashboard</title>
+<style>
+:root{color-scheme:dark;--bg:#09090b;--panel:#111114;--line:#27272a;--text:#f4f4f5;--muted:#a1a1aa;--accent:#d4d4d8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Inter,ui-sans-serif,system-ui,sans-serif}header{height:66px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 26px}header b{letter-spacing:.4px}header span,.muted{color:var(--muted)}main{max-width:1080px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:220px 1fr;gap:18px}.nav,.panel{border:1px solid var(--line);background:var(--panel);border-radius:12px}.nav{padding:9px;height:max-content}.nav a{display:block;padding:11px 12px;color:var(--muted);text-decoration:none;border-radius:7px}.nav a.active,.nav a:hover{background:#222225;color:white}.panel{padding:22px;margin-bottom:16px}h1{font-size:22px;margin:0 0 5px}h2{font-size:15px;margin:0 0 17px}label{display:block;color:#d4d4d8;font-size:12px;margin:13px 0 7px}input,textarea,select{width:100%;border:1px solid #303036;background:#09090b;color:#f4f4f5;border-radius:7px;padding:10px;font:inherit;outline:none}textarea{min-height:110px;resize:vertical}input:focus,textarea:focus,select:focus{border-color:#71717a}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}button{background:#e4e4e7;color:#111114;border:0;border-radius:7px;padding:10px 14px;font-weight:650;cursor:pointer;margin-top:15px}button:hover{background:white}.status{display:flex;gap:9px;align-items:center;color:#d4d4d8}.dot{width:8px;height:8px;border-radius:50%;background:#4ade80}.preview{border:1px solid var(--line);border-left:3px solid #000001;padding:15px;border-radius:5px;white-space:pre-wrap;overflow-wrap:anywhere}.small{font-size:12px;color:var(--muted)}#notice{margin-top:12px;color:#d4d4d8}@media(max-width:700px){.grid{grid-template-columns:1fr}.nav{display:flex;gap:4px;overflow:auto}.nav a{white-space:nowrap}.two{grid-template-columns:1fr}header{padding:0 16px}}
+</style></head><body><header><b>bleeed <span> / dashboard</span></b><span>private server tools</span></header><main><div class="grid"><nav class="nav"><a class="active" href="#overview">Overview</a><a href="#embed">Embed builder</a><a href="#send">Send message</a></nav><section><div class="panel" id="overview"><h1>Dashboard</h1><p class="muted">Manage your bot and compose minimal Discord embeds.</p><div class="status"><i class="dot"></i><span>Dashboard connected to the bot process</span></div><p class="small">Only server channels where the bot can send messages appear below. Access is protected by your DASHBOARD_PASSWORD.</p></div>
+<div class="panel" id="embed"><h2>Embed builder</h2><label for="guild">Server</label><select id="guild"></select><label for="channel">Channel</label><select id="channel"></select><label for="title">Title</label><input id="title" maxlength="256" placeholder="announcement"><label for="description">Description</label><textarea id="description" maxlength="4000" placeholder="Write your message..."></textarea><div class="two"><div><label for="color">Color</label><input id="color" value="#000001" placeholder="#000001"></div><div><label for="image">Image URL (optional)</label><input id="image" placeholder="https://..."></div></div><div class="preview" id="preview"><b id="ptitle">announcement</b><div id="pdesc" style="margin-top:8px">Your embed preview appears here.</div></div><button id="send">Send embed</button><div id="notice"></div></div>
+<div class="panel" id="send"><h2>Plain message</h2><label for="plain">Message</label><textarea id="plain" maxlength="2000" placeholder="Message text..."></textarea><button id="sendplain">Send message</button><p class="small">The bot token is never shown in this page. Keep the dashboard password private.</p></div></section></div></main>
+<script>
+const $=id=>document.getElementById(id);let data={};async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});const j=await r.json().catch(()=>({error:'Request failed'}));if(!r.ok)throw Error(j.error||'Request failed');return j}
+function updatePreview(){ $('ptitle').textContent=$('title').value||''; $('pdesc').textContent=$('description').value||''; $('preview').style.borderLeftColor=$('color').value||'#000001'}['title','description','color'].forEach(id=>$(id).addEventListener('input',updatePreview));
+function fillChannels(){const g=data.guilds.find(x=>x.id===$('guild').value);$('channel').innerHTML='';(g?.channels||[]).forEach(c=>{let o=document.createElement('option');o.value=c.id;o.textContent='# '+c.name;$('channel').appendChild(o)})}
+async function init(){try{data=await api('/api/data');$('guild').innerHTML='';data.guilds.forEach(g=>{let o=document.createElement('option');o.value=g.id;o.textContent=g.name;$('guild').appendChild(o)});$('guild').addEventListener('change',fillChannels);fillChannels();}catch(e){$('notice').textContent=e.message}}
+$('send').onclick=async()=>{try{await api('/api/send-embed',{method:'POST',body:JSON.stringify({guild:$('guild').value,channel:$('channel').value,title:$('title').value,description:$('description').value,color:$('color').value,image:$('image').value})});$('notice').textContent='✅ Embed sent.'}catch(e){$('notice').textContent='❌ '+e.message}};
+$('sendplain').onclick=async()=>{try{await api('/api/send-message',{method:'POST',body:JSON.stringify({guild:$('guild').value,channel:$('channel').value,content:$('plain').value})});$('notice').textContent='✅ Message sent.'}catch(e){$('notice').textContent='❌ '+e.message}};init();
+</script></body></html>"""
+
+async def start_dashboard():
+    global _dashboard_runner
+    if _dashboard_runner is not None or not DASHBOARD_PASSWORD:
+        if not DASHBOARD_PASSWORD:
+            print("dashboard disabled: set DASHBOARD_PASSWORD in FadeHost environment variables")
+        return
+    from aiohttp import web
+    @web.middleware
+    async def dashboard_auth(request, handler):
+        import hmac
+        auth = request.headers.get("Authorization", "")
+        expected = "Basic " + __import__("base64").b64encode(("admin:" + DASHBOARD_PASSWORD).encode()).decode()
+        if not hmac.compare_digest(auth, expected):
+            return web.Response(status=401, headers={"WWW-Authenticate": 'Basic realm="bleeed dashboard"'}, text="Authentication required")
+        return await handler(request)
+    app = web.Application(middlewares=[dashboard_auth], client_max_size=1024 * 32)
+    async def index(request): return web.Response(text=_DASHBOARD_HTML, content_type="text/html")
+    async def data(request):
+        guilds=[]
+        for g in bot.guilds:
+            channels=[{"id":str(c.id),"name":c.name} for c in g.text_channels if c.permissions_for(g.me).send_messages and c.permissions_for(g.me).embed_links]
+            guilds.append({"id":str(g.id),"name":g.name,"channels":channels})
+        return web.json_response({"guilds":guilds,"user":str(bot.user) if bot.user else "offline"})
+    async def send_embed(request):
+        try: payload=await request.json()
+        except Exception: return web.json_response({"error":"Invalid request."},status=400)
+        try:
+            guild=bot.get_guild(int(payload.get("guild",0))); channel=bot.get_channel(int(payload.get("channel",0)))
+            if not guild or not isinstance(channel,discord.TextChannel) or channel.guild.id!=guild.id: raise ValueError("Choose a valid server channel.")
+            title=str(payload.get("title", ""))[:256]; description=str(payload.get("description", ""))[:4000]
+            if not title and not description: raise ValueError("Add a title or description.")
+            raw=str(payload.get("color", "#000001")).strip().lstrip("#")
+            if not re.fullmatch(r"[0-9a-fA-F]{6}",raw): raise ValueError("Color must be a six-digit hex value.")
+            e=discord.Embed(title=title or None,description=description or None,color=int(raw,16))
+            image=str(payload.get("image", "")).strip()
+            if image:
+                from urllib.parse import urlparse
+                u=urlparse(image)
+                if u.scheme not in {"http","https"} or not u.netloc: raise ValueError("Image URL must start with http(s).")
+                e.set_image(url=image)
+            await channel.send(embed=e)
+            return web.json_response({"ok":True})
+        except (ValueError,discord.Forbidden,discord.HTTPException) as exc: return web.json_response({"error":str(exc) or "Couldn't send embed."},status=400)
+    async def send_message(request):
+        try: payload=await request.json(); guild=bot.get_guild(int(payload.get("guild",0))); channel=bot.get_channel(int(payload.get("channel",0))); content=str(payload.get("content", "")).strip()
+        except Exception: return web.json_response({"error":"Invalid request."},status=400)
+        if not guild or not isinstance(channel,discord.TextChannel) or channel.guild.id!=guild.id: return web.json_response({"error":"Choose a valid server channel."},status=400)
+        if not content or len(content)>2000: return web.json_response({"error":"Message must contain 1–2000 characters."},status=400)
+        try: await channel.send(content, allowed_mentions=discord.AllowedMentions.none()); return web.json_response({"ok":True})
+        except (discord.Forbidden,discord.HTTPException) as exc: return web.json_response({"error":str(exc) or "Couldn't send message."},status=400)
+    app.router.add_get("/",index); app.router.add_get("/api/data",data); app.router.add_post("/api/send-embed",send_embed); app.router.add_post("/api/send-message",send_message)
+    _dashboard_runner=web.AppRunner(app); await _dashboard_runner.setup()
+    site=web.TCPSite(_dashboard_runner,"0.0.0.0",int(os.getenv("PORT","8080"))); await site.start()
+    print(f"bleeed dashboard listening on port {os.getenv('PORT','8080')}")
+
+async def _run_bot():
+    async with bot:
+        await start_dashboard()
+        await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN environment variable is required")
+    asyncio.run(_run_bot())
+

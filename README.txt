@@ -1,19 +1,27 @@
-bleeed v77 - repository-inspired command directory
+bleeed v79 - dashboard + embed builder
 
-Changes:
-- Used the public w6rd/bleed repository as general inspiration for a category-oriented command layout.
-- The main help page now shows command categories and their registered command counts.
-- Individual and group help cards now show an inferred module/category instead of incorrectly defaulting to "servers".
-- Kept the existing Python/discord.py bot, prefix, moderation role configuration, booster-role system, and existing features.
-- No JavaScript source was copied into the Python project.
+FadeHost settings
+- Runtime: Python
+- Build: pip install -r requirements.txt
+- Start: python3 main.py
+- Environment: DISCORD_TOKEN = your Discord bot token
+- Environment: DASHBOARD_PASSWORD = a long, unique password for the web dashboard
+- Port: set PORT to the port assigned by your host if it does not provide 8080 by default
 
-Install:
-1. Stop the bot.
-2. Replace main.py with the included version.
-3. Keep your existing DISCORD_TOKEN environment variable and requirements.txt.
-4. Restart the bot.
+Dashboard
+- Open the web service URL/port provided by your host.
+- Browser authentication username: admin
+- Password: the value of DASHBOARD_PASSWORD
+- The dashboard lets you select a server and text channel, compose an embed, preview it, send it, or send a plain message.
+- Only channels where the bot has Send Messages and Embed Links are listed for embeds.
 
-Validation:
-- Python syntax compilation passed.
-- Static AST scan found no duplicate top-level literal command names.
-- Runtime command registration was not tested in this environment because discord.py is not installed here.
+Discord prefix embed command
+,embed title | description | #000001 | https://example.com/image.png
+Color and image URL are optional. Requires Manage Messages or Administrator.
+
+Important
+- Never share DISCORD_TOKEN or DASHBOARD_PASSWORD.
+- Keep both values in FadeHost environment variables, never in GitHub source files.
+- The bot needs appropriate Discord channel permissions to send messages and embeds.
+- Dashboard reachability depends on FadeHost exposing the configured port and, ideally, HTTPS.
+- Syntax and ZIP integrity checks passed. The dashboard and commands have not been tested against a live Discord server in this environment.
