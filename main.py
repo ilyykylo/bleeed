@@ -50,23 +50,37 @@ class ActionResponseEmbed(discord.Embed):
 
 _original_context_send = commands.Context.send
 async def _bleeed_context_send(self, content=None, *args, **kwargs):
+    """Render command replies as compact embeds while preserving rich embeds and UI views."""
     embed = kwargs.get("embed")
     if isinstance(embed, ActionResponseEmbed):
-        kwargs.pop("embed", None)
-        icon = "<:approve:1558768853058588682>" if embed.response_success else "⚠️"
+        # Action responses are compact embeds, not plain-text messages.
         message = embed.response_message.strip()
         if message:
             message = message[0].upper() + message[1:]
-        if embed.response_success and not message.endswith(("!", ".", "?")):
-            message += "!"
-        content = f"{icon} {self.author.mention}: {message}"
-    elif embed and (getattr(embed, "title", "") or "").lower() in {
-        "no permission", "bot permission missing", "permission denied", "missing permission", "invalid argument", "invalid usage"
-    }:
-        kwargs.pop("embed", None)
-        message = (embed.description or embed.title or "Action failed.").strip()
-        message = re.sub(r"^#\s*[^\n]+\n?", "", message).strip()
-        content = f"⚠️ {self.author.mention}: {message}"
+        icon = "<:approve:1558768853058588682>" if embed.response_success else "<:deny:1558768856552439878>"
+        if not message.endswith(("!", ".", "?")):
+            message += "!" if embed.response_success else "."
+        kwargs["embed"] = discord.Embed(
+            description=f"{icon} {self.author.mention}: {message}",
+            color=0x57F287 if embed.response_success else 0xED4245,
+        )
+        content = None
+    elif embed is None and isinstance(content, str) and self.command is not None and not kwargs.get("file") and not kwargs.get("files"):
+        # Normalize every command's plain-text reply into an embed. This includes
+        # invalid arguments, permission errors, BR replies, and utility responses.
+        text = content.strip()
+        lowered = text.lower()
+        if "invalid arguement" in lowered or "invalid argument" in lowered:
+            text = re.sub(r"invalid arguement|invalid argument", "Invalid arguement", text, flags=re.I)
+            color = 0xFEE75C
+        elif "missing permission" in lowered or "couldn't" in lowered or "could not" in lowered or "failed" in lowered or "error:" in lowered or "error " in lowered:
+            color = 0xED4245
+        elif "<:approve:1558768853058588682>" in text or "successfully" in lowered or "you're now" in lowered or "welcome back" in lowered:
+            color = 0x57F287
+        else:
+            color = COLOR
+        kwargs["embed"] = discord.Embed(description=text, color=color)
+        content = None
     return await _original_context_send(self, content, *args, **kwargs)
 commands.Context.send = _bleeed_context_send
 
@@ -1320,13 +1334,23 @@ async def on_message(message):
                 await message.channel.send(autoresponders[message.guild.id][content])
             except (discord.HTTPException, discord.Forbidden) as exc:
                 print(f"autoresponder failed in {message.guild.id}: {exc}")
+    # AFK return notices must work for ordinary messages and be compact embeds.
     if message.author.id in afk_data and not content.startswith(PREFIX):
         afk_info = afk_data.pop(message.author.id, {})
         elapsed = max(0, int(time.time() - afk_info.get("since", time.time())))
-        await message.channel.send(f"👋 {message.author.mention}: Welcome back, you were away for {elapsed} second{'s' if elapsed != 1 else ''}.", delete_after=5)
+        duration = format_duration(elapsed) if "format_duration" in globals() else (f"{elapsed} second{'s' if elapsed != 1 else ''}")
+        await message.channel.send(embed=discord.Embed(
+            description=f"👋 {message.author.mention}: Welcome back, you were away for **{duration}**!",
+            color=0x57F287
+        ), delete_after=5)
     for uid, data in list(afk_data.items()):
-        if uid != message.author.id and f"<@{uid}>" in message.content:
-            await message.channel.send(embed=make_embed("afk", f"**{data['name']}** is AFK — {data['reason']}"), delete_after=8)
+        if uid != message.author.id and (f"<@{uid}>" in message.content or f"<@!{uid}>" in message.content):
+            elapsed = max(0, int(time.time() - data.get("since", time.time())))
+            duration = format_duration(elapsed) if "format_duration" in globals() else (f"{elapsed} second{'s' if elapsed != 1 else ''}")
+            await message.channel.send(embed=discord.Embed(
+                description=f"💤 <@{uid}> has been AFK for **{duration}**",
+                color=COLOR
+            ), delete_after=8)
     await bot.process_commands(message)
 
 
@@ -2425,7 +2449,10 @@ async def security(ctx):
 @bot.command(aliases=["afkset"])
 async def afk(ctx,*,reason="AFK"):
     afk_data[ctx.author.id]={"name":str(ctx.author),"reason":reason,"since":time.time()}
-    await ctx.send(f"<:approve:1558768853058588682> {ctx.author.mention}: You're now AFK with the status: {reason}")
+    await ctx.send(embed=discord.Embed(
+        description=f"💤 {ctx.author.mention}: You're now AFK with the status: {reason}",
+        color=0x57F287
+    ))
 
 @bot.command()
 async def poll(ctx,*,question):
