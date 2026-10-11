@@ -40,6 +40,36 @@ intents.members = True
 intents.presences = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
+
+class ActionResponseEmbed(discord.Embed):
+    """Marker embed converted to the exact compact plain-text action format."""
+    def __init__(self, message, *, success=True):
+        super().__init__(color=0x57F287 if success else 0xED4245)
+        self.response_message = str(message).strip()
+        self.response_success = bool(success)
+
+_original_context_send = commands.Context.send
+async def _bleeed_context_send(self, content=None, *args, **kwargs):
+    embed = kwargs.get("embed")
+    if isinstance(embed, ActionResponseEmbed):
+        kwargs.pop("embed", None)
+        icon = "<:approve:1558768853058588682>" if embed.response_success else "⚠️"
+        message = embed.response_message.strip()
+        if message:
+            message = message[0].upper() + message[1:]
+        if embed.response_success and not message.endswith(("!", ".", "?")):
+            message += "!"
+        content = f"{icon} {self.author.mention}: {message}"
+    elif embed and (getattr(embed, "title", "") or "").lower() in {
+        "no permission", "bot permission missing", "permission denied", "missing permission", "invalid argument", "invalid usage"
+    }:
+        kwargs.pop("embed", None)
+        message = (embed.description or embed.title or "Action failed.").strip()
+        message = re.sub(r"^#\s*[^\n]+\n?", "", message).strip()
+        content = f"⚠️ {self.author.mention}: {message}"
+    return await _original_context_send(self, content, *args, **kwargs)
+commands.Context.send = _bleeed_context_send
+
 start_time = time.time()
 v53_message_times = defaultdict(lambda: deque(maxlen=20))
 warning_data = defaultdict(lambda: defaultdict(list))
@@ -511,22 +541,19 @@ def result_embed(title, label, value, *, extra=None):
 
 
 def action_embed(message, *, added=False, removed=False):
-    """Compact successful action response using the custom approve emoji.
-
-    Role toggle responses use their dedicated <:add:...> and <:remove:...>
-    emojis directly in the role command; generic successful actions always use
-    the approve emoji regardless of whether the action adds or removes something.
-    """
-    icon = "<:approve:1558768853058588682>"
-    return discord.Embed(description=f"{icon} {message}".strip(), color=_response_color(None, message))
+    """Minimal plain-text success response using the requested approve format."""
+    return ActionResponseEmbed(message, success=True)
 
 
 def mod_success(message):
-    return discord.Embed(description=f"<:approve:1558768853058588682> successfully {message}", color=0x57F287)
+    text = str(message).strip()
+    if not text.lower().startswith("successfully "):
+        text = "Successfully " + text
+    return ActionResponseEmbed(text, success=True)
 
 
 def mod_error(message):
-    return discord.Embed(description=f"<:deny:1558768856552439878> {message}", color=0xED4245)
+    return ActionResponseEmbed(str(message).strip(), success=False)
 
 
 def br_response(message, *, success=None):
@@ -536,8 +563,7 @@ def br_response(message, *, success=None):
         lowered = text.lower()
         failure_terms = ("couldn't", "could not", "can't", "cannot", "must be", "use `", "mention the", "only server", "doesn't have", "don't have", "not enough", "invalid", "valid 6-digit", "discord wouldn't", "discord couldn't", "my highest role", "check my", "role hierarchy", "must be below", "must be above", "already", "role could not", "you don't", "your role could not")
         success = not any(term in lowered for term in failure_terms)
-    emoji = "<:approve:1558768853058588682>" if success else "<:deny:1558768856552439878>"
-    return discord.Embed(description=f"{emoji} {text}", color=0x57F287 if success else 0xED4245)
+    return ActionResponseEmbed(text, success=success)
 
 
 async def notify_member_mod_action(member, guild, moderator, action, reason="No reason provided", *, duration=None, details=None):
@@ -1295,8 +1321,9 @@ async def on_message(message):
             except (discord.HTTPException, discord.Forbidden) as exc:
                 print(f"autoresponder failed in {message.guild.id}: {exc}")
     if message.author.id in afk_data and not content.startswith(PREFIX):
-        afk_data.pop(message.author.id, None)
-        await message.channel.send(embed=make_embed("afk removed", f"welcome back {message.author.mention}! your AFK has been removed."), delete_after=5)
+        afk_info = afk_data.pop(message.author.id, {})
+        elapsed = max(0, int(time.time() - afk_info.get("since", time.time())))
+        await message.channel.send(f"👋 {message.author.mention}: Welcome back, you were away for {elapsed} second{'s' if elapsed != 1 else ''}.", delete_after=5)
     for uid, data in list(afk_data.items()):
         if uid != message.author.id and f"<@{uid}>" in message.content:
             await message.channel.send(embed=make_embed("afk", f"**{data['name']}** is AFK — {data['reason']}"), delete_after=8)
@@ -2084,7 +2111,7 @@ async def ban(ctx, member: discord.Member, *, reason="no reason provided"):
     if not bot_can(ctx, "ban_members"):
         return await ctx.send(embed=mod_error("couldn't ban that user — missing bot permission"))
     if not target_ok(ctx, member):
-        return await ctx.send(embed=make_embed("cannot ban member", "The target must be below my highest role and below your highest role."))
+        return await ctx.send(embed=mod_error("couldn't ban that user — check role hierarchy"))
     explicit = re.match(r"^(\d{1,6})(?:\s+(.*))?$", reason.strip())
     if explicit:
         delete_seconds = max(0, min(int(explicit.group(1)), 604800))
@@ -2125,9 +2152,9 @@ async def kick(ctx, member:discord.Member,*,reason="no reason provided"):
     if not role_ok(ctx.author, KICK_ROLES):
         return await ctx.send(embed=mod_error("couldn't kick that user — missing permission"))
     if not bot_can(ctx, "kick_members"):
-        return await ctx.send(embed=make_embed("bot permission missing", "I need **Kick Members** permission to do that."))
+        return await ctx.send(embed=mod_error("couldn't kick that user — missing bot permission"))
     if not target_ok(ctx, member):
-        return await ctx.send(embed=make_embed("cannot kick member", "The target must be below my highest role and below your highest role."))
+        return await ctx.send(embed=mod_error("couldn't kick that user — check role hierarchy"))
     try:
         await member.kick(reason=reason)
     except discord.Forbidden:
@@ -2190,7 +2217,7 @@ async def warn(ctx,member:discord.Member,*,reason="no reason provided"):
     if not role_ok(ctx.author, WARN_ROLES):
         return await ctx.send(embed=mod_error("couldn't warn that user — missing permission"))
     if not target_ok(ctx,member):
-        return await ctx.send(embed=make_embed("cannot warn member", "You can't warn yourself, the server owner, or someone at/above your role."))
+        return await ctx.send(embed=mod_error("couldn't warn that user — check role hierarchy"))
     warning_data[ctx.guild.id][member.id].append(reason)
     record_modlog(ctx.guild, member, "Warn", ctx.author, reason)
     await notify_member_mod_action(member, ctx.guild, ctx.author, "Warned", reason)
@@ -2321,9 +2348,9 @@ async def clearsnipes(ctx):
 async def snipe(ctx):
     snipes = getattr(bot, "_snipes", {}).get(ctx.channel.id, [])
     now = time.time()
-    entries = [x for x in snipes if now - x["deleted_at"] <= 3600]
+    entries = [x for x in snipes if now - x["deleted_at"] <= 7200]
     if not entries:
-        return await ctx.send(embed=make_embed("snipe", "nothing to snipe here from the last hour."))
+        return await ctx.send(f"🔎 {ctx.author.mention}: No deleted messages found in the past 2 hours!")
     # Drop expired entries from the in-memory history.
     try:
         bot._snipes[ctx.channel.id] = deque(entries, maxlen=100)
@@ -2396,7 +2423,9 @@ async def security(ctx):
 
 
 @bot.command(aliases=["afkset"])
-async def afk(ctx,*,reason="AFK"): afk_data[ctx.author.id]={"name":str(ctx.author),"reason":reason}; await ctx.send(embed=make_embed("afk",f"{ctx.author.mention} is now AFK: {reason}"))
+async def afk(ctx,*,reason="AFK"):
+    afk_data[ctx.author.id]={"name":str(ctx.author),"reason":reason,"since":time.time()}
+    await ctx.send(f"<:approve:1558768853058588682> {ctx.author.mention}: You're now AFK with the status: {reason}")
 
 @bot.command()
 async def poll(ctx,*,question):
@@ -4330,27 +4359,34 @@ async def on_raw_reaction_add(payload):
 
 @bot.event
 async def on_command_error(ctx, error):
+    """Keep command failures consistent and compact across the entire prefix command registry."""
+    command_name = ctx.command.qualified_name if ctx.command else "commandname"
+    invalid = f"⚠️ {ctx.author.mention}: Invalid arguement use '{PREFIX}help {command_name}'"
     if isinstance(error, commands.CommandNotFound):
+        # Unknown commands stay quiet, matching the reference bot's behavior.
         return
-    if isinstance(error, commands.MissingRequiredArgument):
-        return await ctx.send(embed=mod_error(f"invalid usage · `{PREFIX}help {ctx.command.qualified_name}`"))
-    if isinstance(error, commands.BadArgument):
-        return await ctx.send(embed=mod_error(f"invalid argument · `{PREFIX}help {ctx.command.qualified_name}`"))
+    if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument, commands.TooManyArguments, commands.UserInputError)):
+        return await ctx.send(invalid)
     if isinstance(error, commands.MissingPermissions):
-        return await ctx.send(embed=mod_error("you don't have permission to use this command"))
+        missing = ", ".join(str(p) for p in error.missing_permissions)
+        return await ctx.send(f"⚠️ {ctx.author.mention}: You're missing permission: {missing}")
     if isinstance(error, commands.BotMissingPermissions):
-        return await ctx.send(embed=mod_error("missing bot permission"))
+        missing = ", ".join(error.missing_permissions)
+        return await ctx.send(f"⚠️ {ctx.author.mention}: I'm missing permission: {missing}")
     if isinstance(error, commands.CommandOnCooldown):
-        return await ctx.send(embed=mod_error(f"try again <t:{int(time.time()+error.retry_after)}:R>"))
+        return await ctx.send(f"⚠️ {ctx.author.mention}: Try again <t:{int(time.time()+error.retry_after)}:R>")
     if isinstance(error, commands.CheckFailure) and str(error) == "command disabled in this channel":
-        return await ctx.send(embed=mod_error(f"`{PREFIX}{ctx.command.qualified_name}` is disabled here"), delete_after=5)
+        return await ctx.send(f"⚠️ {ctx.author.mention}: This command is disabled here", delete_after=5)
     if isinstance(error, commands.CommandInvokeError):
-        original=error.original
+        original = error.original
         print(f"Command error in {ctx.command}: {original!r}")
         if isinstance(original, discord.Forbidden):
-            return await ctx.send(embed=mod_error("discord denied the action · check permissions and role hierarchy"))
-        return await ctx.send(embed=mod_error("command failed · try again"))
+            return await ctx.send(f"⚠️ {ctx.author.mention}: Missing permission or role hierarchy prevents this action")
+        if isinstance(original, (ValueError, TypeError)):
+            return await ctx.send(invalid)
+        return await ctx.send(f"⚠️ {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
     print(f"Unhandled command error in {ctx.command}: {error!r}")
+    return await ctx.send(f"⚠️ {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN environment variable is missing.")

@@ -1,27 +1,24 @@
-bleeed v79 - dashboard + embed builder
+bleeed v88 - consistent minimal responses
 
 FadeHost settings
 - Runtime: Python
 - Build: pip install -r requirements.txt
 - Start: python3 main.py
 - Environment: DISCORD_TOKEN = your Discord bot token
-- Environment: DASHBOARD_PASSWORD = a long, unique password for the web dashboard
-- Port: set PORT to the port assigned by your host if it does not provide 8080 by default
+- Environment: DASHBOARD_PASSWORD = a long, unique password for the web dashboard (if using it)
 
-Dashboard
-- Open the web service URL/port provided by your host.
-- Browser authentication username: admin
-- Password: the value of DASHBOARD_PASSWORD
-- The dashboard lets you select a server and text channel, compose an embed, preview it, send it, or send a plain message.
-- Only channels where the bot has Send Messages and Embed Links are listed for embeds.
-
-Discord prefix embed command
-,embed title | description | #000001 | https://example.com/image.png
-Color and image URL are optional. Requires Manage Messages or Administrator.
+Response style
+- Command errors are one line, no embeds.
+- Invalid arguments, missing arguments, too many arguments, and bad user input use:
+  ⚠️ @user: Invalid arguement use ',help commandname'
+  The command name is filled in automatically, for example ',help warn'.
+- Missing permissions use the warning style, for example:
+  ⚠️ @user: You're missing permission: ban_members
+- Cooldowns and command failures also use compact warning replies.
+- Existing approve-style action responses and Booster Role response formatting are preserved.
 
 Important
 - Never share DISCORD_TOKEN or DASHBOARD_PASSWORD.
-- Keep both values in FadeHost environment variables, never in GitHub source files.
-- The bot needs appropriate Discord channel permissions to send messages and embeds.
-- Dashboard reachability depends on FadeHost exposing the configured port and, ideally, HTTPS.
-- Syntax and ZIP integrity checks passed. The dashboard and commands have not been tested against a live Discord server in this environment.
+- Keep tokens and passwords in host environment variables, never in source code.
+- Required Discord permissions and role hierarchy still apply.
+- Syntax and ZIP integrity checks are run locally; the bot has not been tested against a live Discord server here.
