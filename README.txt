@@ -1,32 +1,19 @@
-bleeed v94 - standardized help cards and cleaned command directory
+bleeed v99 - Consistent command response layout
 
-FadeHost settings
-- Runtime: Python
-- Branch: main
-- Build: pip install -r requirements.txt
-- Start: python3 main.py
-- Environment: DISCORD_TOKEN = your Discord bot token
-- Environment: DASHBOARD_PASSWORD = a long, unique password for the web dashboard (if using it)
+Changes:
+- Audited the shared Context.send wrapper: command replies sent through ctx.send are normalized to the compact bleeed embed style (legacy title/author/footer/timestamp and inconsistent colors removed; useful fields, thumbnails, images and views preserved).
+- Fixed `,nick` to use the same approve/deny action response format as other action commands: green approve response on success, red deny response on failure, with the invoking user's mention.
+- Added handling for Discord permission/hierarchy failures when changing a nickname, so those return a red deny response rather than a traceback.
+- Includes the v98 sticky message and personal to-do list features.
 
-What's updated
-- Prefix-command embeds use one compact black bleeed style with lowercase heading lines; legacy embed authors, footers, timestamps, and inconsistent colors are removed. Useful fields, images, thumbnails, and views are preserved.
-- Shared make_embed replies are black everywhere, including command errors and event notices. Moderation DMs use a compact heading and retain the server icon thumbnail.
-- The command directory is split into seven category-oriented pages for this build. Every page is capped to safe field/source lengths before rendering; page 7 is included and was checked against Discord's documented embed limits using static validation.
-- Pagination errors are logged and get a private fallback notice when Discord allows it. Buttons still expire after 60 seconds, as configured.
-- Added ,botcount / ,botscount, ,humancount / ,humanscount, and ,customrolecount / ,customroles.
-- Existing ,channelcount and ,servercreated commands remain registered without duplicate entries.
-- Static directory check: all 309 command-directory entries appear exactly once across seven pages.
-
-Important
-- Never share DISCORD_TOKEN or DASHBOARD_PASSWORD.
-- Keep tokens and passwords in host environment variables, never in source code.
-- Required Discord permissions and role hierarchy still apply.
-- Python syntax, ZIP integrity, and static seven-page directory checks passed locally. This build has not been tested against a live Discord server here, so live button interaction cannot be guaranteed from this environment.
+Install all three files on FadeHost and restart bleeed.
+Validation: Python syntax compilation and ZIP integrity checks passed. Live Discord behavior was not tested. This shared wrapper covers command responses routed through ctx.send; direct Discord interaction responses and messages sent directly through channel/user objects may use separate code paths and are not guaranteed to be normalized by this wrapper.
 
 
-Version 94 updates
-- Every `,h <command>` / `,help <command>` detail uses the same layout: Group Command, Aliases, Parameters, Information, and Usage.
-- Nested group commands can be looked up by full path, e.g. `,h purge links`.
-- The ban help card uses the requested syntax/example format: `Syntax: ban (user) (delete history) <reason> Example: ban jonathan 1d Threatening members`.
-- The command directory now filters out stale documentation-only entries and duplicate command paths; it only lists commands that resolve to registered commands. This cleans the browser without deleting working bot functionality.
-- Syntax compilation and archive integrity are checked locally. A live Discord run is still required to confirm runtime command registration and button interactions.
+v100 update:
+- Converted `,nuke` into a command group while preserving the original `,nuke` channel-recreation flow.
+- Added `,nuke roles`, an administrator-only role cleanup command with a 30-second confirmation prompt.
+- The role nuke excludes @everyone, integration/bot-managed roles, and every role at or above bleeed's current highest role; hierarchy is checked again immediately before each delete.
+- Nuke prompts and interaction results use the compact `# command` embed layout, with green approve and red deny action responses.
+- Existing `ctx.send` embed normalization remains in place for prefix commands; direct interaction/event messages are normalized individually where updated.
+- Validation: Python syntax compilation and ZIP integrity checks passed. Live Discord behavior has not been tested.

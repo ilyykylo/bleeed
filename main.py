@@ -62,10 +62,23 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
             message += "!" if embed.response_success else "."
         kwargs["embed"] = discord.Embed(
             description=f"{icon} {self.author.mention}: {message}",
-            color=COLOR,
+            color=0x57F287 if embed.response_success else 0xED4245,
         )
         content = None
     elif isinstance(embed, discord.Embed):
+        # Normalize explicit command permission-denied embeds to the same
+        # compact Bleed-style response as decorator permission failures.
+        _permission_text = f"{embed.title or ''} {embed.description or ''}".lower()
+        if (self.command is not None and "no permission" in _permission_text
+                and any(term in _permission_text for term in ("you need", "you don't", "required", "configured moderation role"))):
+            denied = ActionResponseEmbed("You don't have permission to use this command.", success=False)
+            message = denied.response_message
+            kwargs["embed"] = discord.Embed(
+                description=f"<:deny:1558768856552439878> {self.author.mention}: {message}",
+                color=0xED4245,
+            )
+            content = None
+            return await _original_context_send(self, content, *args, **kwargs)
         # One consistent bleeed embed style for every prefix-command embed.
         # Keep useful fields, images, thumbnails and views, but remove legacy
         # title bars, authors, footers, timestamps and inconsistent colors.
@@ -85,7 +98,21 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
         lowered = text.lower()
         if "invalid arguement" in lowered or "invalid argument" in lowered:
             text = re.sub(r"invalid arguement|invalid argument", "Invalid arguement", text, flags=re.I)
-        kwargs["embed"] = discord.Embed(description=text, color=COLOR)
+        # Keep action replies visibly marked and color-coded, even when a command
+        # sends a normal string instead of ActionResponseEmbed.
+        lowered = text.lower()
+        error_terms = ("couldn't", "could not", "can't", "cannot", "failed", "error", "denied", "don't have permission", "doesn't have permission", "invalid", "not found", "already exists", "must be", "required permissions")
+        success_terms = ("successfully", "success", "created", "deleted", "removed", "added", "muted", "unmuted", "banned", "unbanned", "kicked", "warned", "locked", "unlocked", "purged", "saved")
+        has_marker = any(mark in text for mark in ("<:approve:1558768853058588682>", "<:deny:1558768856552439878>", "<:warning:743006201981173831>"))
+        if not has_marker and any(term in lowered for term in error_terms):
+            text = f"<:deny:1558768856552439878> {self.author.mention}: {text}"
+            response_color = 0xED4245
+        elif not has_marker and any(term in lowered for term in success_terms):
+            text = f"<:approve:1558768853058588682> {self.author.mention}: {text}"
+            response_color = 0x57F287
+        else:
+            response_color = COLOR
+        kwargs["embed"] = discord.Embed(description=text, color=response_color)
         content = None
     return await _original_context_send(self, content, *args, **kwargs)
 commands.Context.send = _bleeed_context_send
@@ -1115,9 +1142,9 @@ class CommandsView(discord.ui.View):
             print(f"commands pagination failed on page {target + 1}: {type(exc).__name__}: {exc}")
             try:
                 if not interaction.response.is_done():
-                    await interaction.response.send_message("⚠️ That page couldn't load. Try `,commands` again.", ephemeral=True)
+                    await interaction.response.send_message("<:warning:743006201981173831> That page couldn't load. Try `,commands` again.", ephemeral=True)
                 else:
-                    await interaction.followup.send("⚠️ That page couldn't load. Try `,commands` again.", ephemeral=True)
+                    await interaction.followup.send("<:warning:743006201981173831> That page couldn't load. Try `,commands` again.", ephemeral=True)
             except Exception as followup_exc:
                 print(f"commands pagination error notice failed: {type(followup_exc).__name__}: {followup_exc}")
 
@@ -1440,6 +1467,27 @@ async def on_message(message):
                 await message.channel.send(autoresponders[message.guild.id][content])
             except (discord.HTTPException, discord.Forbidden) as exc:
                 print(f"autoresponder failed in {message.guild.id}: {exc}")
+        # Sticky messages: keep one copy at the bottom of configured channels.
+        try:
+            sticky_cfg = COMPAT.get(str(message.guild.id), {}).get("sticky_messages", {})
+            sticky_text = sticky_cfg.get(str(message.channel.id)) if isinstance(sticky_cfg, dict) else None
+            if sticky_text and not message.author.bot and not content.startswith(PREFIX):
+                last_ids = COMPAT.setdefault(str(message.guild.id), {}).setdefault("sticky_last_ids", {})
+                old_id = last_ids.get(str(message.channel.id))
+                if old_id:
+                    try:
+                        old_msg = await message.channel.fetch_message(int(old_id))
+                        await old_msg.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                        pass
+                try:
+                    sticky_msg = await message.channel.send(embed=make_embed("sticky message", str(sticky_text)[:4000]))
+                    last_ids[str(message.channel.id)] = sticky_msg.id
+                    compat_save()
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+        except Exception as exc:
+            print(f"sticky message failed in {message.guild.id}: {exc}")
     # AFK return notices must work for ordinary messages and be compact embeds.
     if message.author.id in afk_data and not content.startswith(PREFIX):
         afk_info = afk_data.pop(message.author.id, {})
@@ -1523,7 +1571,7 @@ def command_help_embed(cmd, display_path=None):
     )
     e.add_field(name="**Aliases**", value=alias_text, inline=False)
     e.add_field(name="**Parameters**", value=parameters or "n/a", inline=False)
-    e.add_field(name="**Information**", value=f"[:warning~1:]({_HELP_WARNING_URL}) {permission}", inline=False)
+    e.add_field(name="**Information**", value=f"<:warning:743006201981173831> {permission}", inline=False)
     e.add_field(name="**Usage**", value=usage, inline=False)
     return e
 
@@ -2756,9 +2804,15 @@ async def slowmode(ctx, seconds: int = None):
 async def nick(ctx, member: discord.Member, *, nickname: str = None):
     """Change a member nickname."""
     if not target_ok(ctx, member):
-        return await ctx.send(embed=make_embed("error", "you can't change that member's nickname."))
-    await member.edit(nick=nickname, reason=f"nickname changed by {ctx.author}")
-    await ctx.send(embed=make_embed("nickname", f"nickname updated for {member.mention}."))
+        return await ctx.send(embed=mod_error("You can't change that member's nickname."))
+    try:
+        await member.edit(nick=nickname, reason=f"nickname changed by {ctx.author}")
+    except discord.Forbidden:
+        return await ctx.send(embed=mod_error("Couldn't change that member's nickname. Check my permissions and role hierarchy."))
+    except discord.HTTPException:
+        return await ctx.send(embed=mod_error("Couldn't change that member's nickname."))
+    label = "reset" if nickname is None else "updated"
+    await ctx.send(embed=mod_success(f"nickname {label} for {member.mention}."))
 
 
 @bot.group(name="role", aliases=["r"], invoke_without_command=True)
@@ -3347,6 +3401,38 @@ async def create_vc(ctx, *, name: str):
         f"**channel:** {channel.mention}\n**id:** `{channel.id}`\n**created by:** {ctx.author.mention}"
     )
     await ctx.send(embed=e)
+
+
+@bot.group(name="todo", aliases=["task", "tasks"], invoke_without_command=True)
+async def todo(ctx, action="list", *, task=""):
+    """Keep a persistent personal to-do list: add, list, done, and clear."""
+    data = _load_json_config("todo_lists.json", {})
+    key = str(ctx.author.id)
+    items = data.setdefault(key, [])
+    action = action.lower()
+    if action in ("add", "new", "create"):
+        if not task.strip():
+            return await ctx.send(embed=make_embed("to-do", f"Usage: `{PREFIX}todo add <task>`"))
+        next_id = max([int(item.get("id", 0)) for item in items] + [0]) + 1
+        items.append({"id": next_id, "task": task.strip()[:300], "created": int(time.time())})
+        _save_json_file("todo_lists.json", data)
+        return await ctx.send(embed=make_embed("to-do", f"Added task **#{next_id}**: {task.strip()[:300]}"))
+    if action in ("done", "remove", "delete"):
+        try: task_id = int(task.strip())
+        except (TypeError, ValueError):
+            return await ctx.send(embed=make_embed("to-do", f"Usage: `{PREFIX}todo done <task ID>`"))
+        remaining = [item for item in items if int(item.get("id", 0)) != task_id]
+        if len(remaining) == len(items):
+            return await ctx.send(embed=make_embed("to-do", "That task ID wasn't found."))
+        data[key] = remaining
+        _save_json_file("todo_lists.json", data)
+        return await ctx.send(embed=make_embed("to-do", f"Completed task **#{task_id}**."))
+    if action == "clear":
+        data[key] = []
+        _save_json_file("todo_lists.json", data)
+        return await ctx.send(embed=make_embed("to-do", "Your to-do list is clear."))
+    body = "\n".join(f"`#{item.get('id')}` {str(item.get('task', ''))[:300]}" for item in items[-20:]) or "Your list is empty. Add one with `,todo add <task>`."
+    await ctx.send(embed=make_embed("your to-do list", body))
 
 
 @bot.group(name="remind", invoke_without_command=True)
@@ -4528,7 +4614,7 @@ async def on_raw_reaction_add(payload):
 async def on_command_error(ctx, error):
     """Keep command failures consistent and compact across the entire prefix command registry."""
     command_name = ctx.command.qualified_name if ctx.command else "commandname"
-    invalid = f"⚠️ {ctx.author.mention}: Invalid arguement use '{PREFIX}help {command_name}'"
+    invalid = f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use '{PREFIX}h {command_name}'"
     # Bleed-style, command-specific usage errors for moderation commands.
     # Keep these short and show the actual prefix syntax instead of a generic help hint.
     mod_usage = {
@@ -4585,28 +4671,26 @@ async def on_command_error(ctx, error):
     if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument, commands.TooManyArguments, commands.UserInputError)):
         usage = mod_usage.get(command_name) or mod_usage.get(ctx.command.name if ctx.command else "")
         if usage:
-            return await ctx.send(f":warning: **{ctx.author.mention} | own**: Usage: `,{usage}`.")
+            return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use '{PREFIX}h {command_name}'")
         return await ctx.send(invalid)
     if isinstance(error, commands.MissingPermissions):
-        missing = ", ".join(str(p) for p in error.missing_permissions)
-        return await ctx.send(f"⚠️ {ctx.author.mention}: You're missing permission: {missing}")
+        return await ctx.send(embed=mod_error("You don't have permission to use this command."))
     if isinstance(error, commands.BotMissingPermissions):
-        missing = ", ".join(error.missing_permissions)
-        return await ctx.send(f"⚠️ {ctx.author.mention}: I'm missing permission: {missing}")
+        return await ctx.send(embed=mod_error("I don't have the required permissions to do that."))
     if isinstance(error, commands.CommandOnCooldown):
-        return await ctx.send(f"⚠️ {ctx.author.mention}: Try again <t:{int(time.time()+error.retry_after)}:R>")
+        return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Try again <t:{int(time.time()+error.retry_after)}:R>")
     if isinstance(error, commands.CheckFailure) and str(error) == "command disabled in this channel":
-        return await ctx.send(f"⚠️ {ctx.author.mention}: This command is disabled here", delete_after=5)
+        return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: This command is disabled here", delete_after=5)
     if isinstance(error, commands.CommandInvokeError):
         original = error.original
         print(f"Command error in {ctx.command}: {original!r}")
         if isinstance(original, discord.Forbidden):
-            return await ctx.send(f"⚠️ {ctx.author.mention}: Missing permission or role hierarchy prevents this action")
+            return await ctx.send(embed=mod_error("I couldn't complete that action because of missing permissions or role hierarchy."))
         if isinstance(original, (ValueError, TypeError)):
             return await ctx.send(invalid)
-        return await ctx.send(f"⚠️ {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
+        return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
     print(f"Unhandled command error in {ctx.command}: {error!r}")
-    return await ctx.send(f"⚠️ {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
+    return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
@@ -4738,23 +4822,50 @@ async def boosts_compat(ctx, action="list", channel: discord.TextChannel=None, *
         return await compat_reply(ctx,"boosts",cfg.get(str(channel.id),"No boost message configured for that channel."))
     await compat_reply(ctx,"boosts","\n".join(f"<#{cid}> — {msg}" for cid,msg in cfg.items()) or "No boost messages configured.")
 
-@bot.command(name="stickymessage", aliases=["stickies"])
-async def stickymessage_compat(ctx, action="list", channel: discord.TextChannel=None, *, message=""):
-    if not compat_need_manage(ctx): return await compat_reply(ctx,"stickymessage","You need Manage Server.")
-    cfg=compat_guild(ctx).setdefault("sticky_messages",{})
-    action=action.lower()
-    if action=="add":
-        channel=channel or ctx.channel
-        if not message: return await compat_reply(ctx,"stickymessage","Usage: `,stickymessage add #channel <message>`")
-        cfg[str(channel.id)]=message; compat_save()
-        return await compat_reply(ctx,"stickymessage",f"Saved sticky text for {channel.mention}.")
-    if action=="remove":
-        channel=channel or ctx.channel; cfg.pop(str(channel.id),None); compat_save()
-        return await compat_reply(ctx,"stickymessage",f"Removed sticky configuration for {channel.mention}.")
-    if action=="view":
-        channel=channel or ctx.channel
-        return await compat_reply(ctx,"stickymessage",cfg.get(str(channel.id),"No sticky configured."))
-    await compat_reply(ctx,"stickymessage","\n".join(f"<#{cid}> — {msg}" for cid,msg in cfg.items()) or "No sticky messages configured.")
+@bot.command(name="sticky", aliases=["stickymessage", "stickies"])
+async def stickymessage_compat(ctx, action="list", *, message=""):
+    """Set, remove, view, or list auto-reposted sticky messages."""
+    if not ctx.guild:
+        return await compat_reply(ctx, "sticky", "Use this command in a server channel.")
+    if not compat_need_manage(ctx):
+        return await compat_reply(ctx, "sticky", "You need Manage Server.")
+    cfg = compat_guild(ctx).setdefault("sticky_messages", {})
+    action = action.lower()
+    channel = ctx.channel
+    # Optional channel mention/name at the start of the remainder.
+    match = re.match(r"^(<#(\d+)>|(?:<#)?(\d{15,22})>?|#?(\w[\w-]{1,90}))\s+(.+)$", message, re.S)
+    if match:
+        possible_id = match.group(2) or match.group(3)
+        possible_name = match.group(4)
+        candidate = ctx.guild.get_channel(int(possible_id)) if possible_id else discord.utils.get(ctx.guild.text_channels, name=possible_name)
+        if candidate and isinstance(candidate, discord.TextChannel):
+            channel = candidate
+            message = match.group(5)
+    cid = str(channel.id)
+    last_ids = compat_guild(ctx).setdefault("sticky_last_ids", {})
+    if action in ("set", "add", "create"):
+        if not message.strip():
+            return await compat_reply(ctx, "sticky", f"Usage: `{PREFIX}sticky set <message>` or `{PREFIX}sticky set #channel <message>`")
+        cfg[cid] = message.strip()[:4000]
+        compat_save()
+        return await compat_reply(ctx, "sticky", f"Sticky message set for {channel.mention}. It will repost when someone chats.")
+    if action in ("remove", "delete", "off", "disable"):
+        cfg.pop(cid, None)
+        old_id = last_ids.pop(cid, None)
+        compat_save()
+        if old_id:
+            try:
+                old_msg = await channel.fetch_message(int(old_id))
+                await old_msg.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                pass
+        return await compat_reply(ctx, "sticky", f"Sticky message removed from {channel.mention}.")
+    if action in ("view", "show"):
+        return await compat_reply(ctx, "sticky", cfg.get(cid, "No sticky message is configured for this channel."))
+    if action == "list":
+        body = "\n".join(f"<#{channel_id}> — {text[:120]}" for channel_id, text in cfg.items()) or "No sticky messages configured."
+        return await compat_reply(ctx, "sticky messages", body)
+    return await compat_reply(ctx, "sticky", f"Usage: `{PREFIX}sticky set <message>`, `{PREFIX}sticky remove`, `{PREFIX}sticky view`, `{PREFIX}sticky list`")
 
 @bot.command(name="imgonly", aliases=["galleryonly"])
 async def imgonly_compat(ctx, action="list", channel: discord.TextChannel=None):
@@ -5028,7 +5139,8 @@ bot.command_prefix = _bleeed_dynamic_prefix
 CATEGORIES.extend([
     ("Prefix & Setup", ["prefix", "settings", "seticon", "setbanner", "setsplashbackground"]),
     ("Booster Roles Plus", ["boosterrole", "br"]),
-    ("Messages & Community", ["boosts", "stickymessage", "imgonly", "welcome", "goodbye", "suggest", "suggestchannel", "reposter", "badge", "honeypot"]),
+    ("Messages & Community", ["boosts", "sticky", "imgonly", "welcome", "goodbye", "suggest", "suggestchannel", "reposter", "badge", "honeypot"]),
+    ("Productivity", ["todo", "remind", "countdown", "timestamp"]),
     ("Configuration", ["invoke", "alias", "fakepermissions", "pagination", "pins", "webhook", "customize"]),
     ("Command Controls", ["disablecommand", "enablecommand", "disablecommandall", "enablecommandall", "disableevent", "enableevent", "disablemodule", "enablemodule", "ignore", "commandtoggle"]),
     ("Exports", ["extractemotes", "extractstickers"]),
@@ -5039,7 +5151,8 @@ COMMAND_INFO.update({
     "prefix": ("View or configure the server command prefix.", "prefix [view|set|remove] [prefix]", "prefix set !", []),
     "boosterrole": ("Manage booster role settings and tools.", "boosterrole <action> [value]", "boosterrole cleanup", ["brrole"]),
     "boosts": ("Configure boost messages per channel.", "boosts <add|view|list|remove|variables> [channel] [message]", "boosts add #general Thanks for boosting!", []),
-    "stickymessage": ("Manage sticky message templates by channel.", "stickymessage <add|view|list|remove> [channel] [message]", "stickymessage add #chat Read the rules!", ["stickies"]),
+    "sticky": ("Automatically repost a channel message when new chat arrives.", "sticky <set|remove|view|list> [message]", "sticky set Read the rules!", ["stickymessage", "stickies"]),
+    "todo": ("Keep a personal to-do list that survives bot restarts.", "todo <add|list|done|clear> [task or ID]", "todo add Finish homework", ["task", "tasks"]),
     "imgonly": ("Configure image-only channels.", "imgonly <add|remove|list> [channel]", "imgonly add #gallery", ["galleryonly"]),
     "invoke": ("Configure custom punishment response templates.", "invoke <punishment> <dm|message> <text>", "invoke ban dm You were banned from {server}.", []),
     "pagination": ("Save and manage pagination/embed drafts.", "pagination <list|add|set|update|remove|reset> [value]", "pagination list", []),
@@ -5664,23 +5777,32 @@ class NukeConfirmView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = bot.get_channel(self.channel_id)
         if not isinstance(channel, discord.TextChannel):
-            return await interaction.response.edit_message(content="the original text channel is no longer available.", embed=None, view=None)
+            return await interaction.response.edit_message(embed=discord.Embed(
+                description=f"# nuke\n<:deny:1558768856552439878> {interaction.user.mention}: The original text channel is no longer available.",
+                color=0xED4245,
+            ), content=None, view=None)
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             clone = await channel.clone(reason=f"channel nuked by {interaction.user} ({interaction.user.id})")
             await clone.edit(position=channel.position)
             await channel.delete(reason=f"channel nuked by {interaction.user} ({interaction.user.id})")
-            await clone.send(embed=make_embed("channel recreated", f"channel recreated by {interaction.user.mention}."))
-            await interaction.followup.send(f"channel recreated: {clone.mention}", ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            await interaction.followup.send(f"couldn't complete the nuke: `{exc}`. check the bot's Manage Channels permission and role access.", ephemeral=True)
+            await clone.send(embed=make_embed("nuke", f"channel recreated by {interaction.user.mention}."))
+            await interaction.followup.send(embed=discord.Embed(
+                description=f"# nuke\n<:approve:1558768853058588682> {interaction.user.mention}: Successfully recreated {clone.mention}.",
+                color=0x57F287,
+            ), ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send(embed=discord.Embed(
+                description=f"# nuke\n<:deny:1558768856552439878> {interaction.user.mention}: Couldn't complete the nuke. Check bleeed's Manage Channels permission and role access.",
+                color=0xED4245,
+            ), ephemeral=True)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="nuke cancelled.", embed=None, view=None)
         self.stop()
 
-@bot.command(name="nuke")
+@bot.group(name="nuke", invoke_without_command=True)
 @commands.has_permissions(administrator=True)
 async def nuke(ctx):
     """Ask for confirmation before recreating the current text channel."""
@@ -5688,9 +5810,108 @@ async def nuke(ctx):
         return await ctx.send(embed=make_embed("nuke", "use this command in a regular text channel, not a thread or voice channel."))
     view = NukeConfirmView(ctx.author.id, ctx.channel.id)
     view.message = await ctx.send(
-        embed=make_embed("confirm channel nuke", f"are you sure you want to delete and recreate {ctx.channel.mention}?\n\nthis removes the channel's message history. this prompt expires in 30 seconds."),
+        embed=make_embed("nuke", f"are you sure you want to delete and recreate {ctx.channel.mention}?\n\nthis removes the channel's message history. this prompt expires in 30 seconds."),
         view=view,
     )
+
+class NukeRolesConfirmView(discord.ui.View):
+    def __init__(self, owner_id: int, guild_id: int):
+        super().__init__(timeout=30)
+        self.owner_id = owner_id
+        self.guild_id = guild_id
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(embed=discord.Embed(
+                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: Only the administrator who started this action can use these buttons.",
+                color=0xED4245,
+            ), ephemeral=True)
+            return False
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(embed=discord.Embed(
+                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: Administrator permission is required.",
+                color=0xED4245,
+            ), ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except (discord.HTTPException, discord.NotFound):
+                pass
+
+    @discord.ui.button(label="Yes, nuke roles", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = bot.get_guild(self.guild_id)
+        if guild is None or guild.me is None:
+            return await interaction.response.edit_message(embed=discord.Embed(
+                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: I couldn't access this server.",
+                color=0xED4245,
+            ), view=None)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        bot_top_role = guild.me.top_role
+        candidates = [
+            role for role in guild.roles
+            if not role.is_default() and not role.managed and role < bot_top_role
+        ]
+        candidates.sort(key=lambda role: (role.position, role.id))
+        deleted = 0
+        skipped = 0
+        for role in candidates:
+            # Re-check hierarchy immediately before each delete. Never try roles at
+            # or above bleeed's current highest role, even if role positions change.
+            current_me = guild.me
+            if current_me is None or role >= current_me.top_role or role.is_default() or role.managed:
+                skipped += 1
+                continue
+            try:
+                await role.delete(reason=f"role nuke by {interaction.user} ({interaction.user.id})")
+                deleted += 1
+            except (discord.Forbidden, discord.HTTPException):
+                skipped += 1
+        if deleted:
+            embed = discord.Embed(
+                description=f"# nuke roles\n<:approve:1558768853058588682> {interaction.user.mention}: Successfully deleted **{deleted}** role{'s' if deleted != 1 else ''}.\nSkipped **{skipped}** role{'s' if skipped != 1 else ''} that couldn't be deleted or weren't manageable.",
+                color=0x57F287,
+            )
+        else:
+            embed = discord.Embed(
+                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: Couldn't delete any roles. Check bleeed's **Manage Roles** permission and role hierarchy.\nSkipped **{skipped}** role{'s' if skipped != 1 else ''}.",
+                color=0xED4245,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=discord.Embed(
+            description=f"# nuke roles\n{interaction.user.mention}: Role nuke cancelled.",
+            color=COLOR,
+        ), view=None)
+        self.stop()
+
+@nuke.command(name="roles")
+@commands.has_permissions(administrator=True)
+async def nuke_roles(ctx):
+    """Ask for confirmation before deleting every manageable, non-managed role."""
+    guild = ctx.guild
+    if guild is None or guild.me is None:
+        return await ctx.send(embed=mod_error("I couldn't access this server."))
+    if not guild.me.guild_permissions.manage_roles:
+        return await ctx.send(embed=mod_error("I need Manage Roles to delete roles."))
+    candidates = [role for role in guild.roles if not role.is_default() and not role.managed and role < guild.me.top_role]
+    if not candidates:
+        return await ctx.send(embed=mod_error("There are no roles below my highest role that I can delete."))
+    view = NukeRolesConfirmView(ctx.author.id, guild.id)
+    view.message = await ctx.send(embed=make_embed(
+        "nuke roles",
+        f"This will permanently delete **{len(candidates)}** manageable roles in this server.\n\nRoles at or above bleeed's highest role, @everyone, and integration/bot-managed roles will never be targeted.\n\nConfirm within 30 seconds.",
+    ), view=view)
 
 @slowmode.command(name="set")
 @commands.has_permissions(manage_channels=True)
