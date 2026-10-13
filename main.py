@@ -66,6 +66,59 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
         )
         content = None
     elif isinstance(embed, discord.Embed):
+        # Normalize action-style replies from EVERY prefix command, not just
+        # moderation/BR. Preserve genuinely informational embeds (fields, images,
+        # thumbnails, menus) while converting simple success/error responses.
+        _title = (embed.title or "").strip()
+        _desc = (embed.description or "").strip()
+        _status_text = f"{_title} {_desc}".lower()
+        _error_title_terms = ("no permission", "permission missing", "failed", "failure", "error", "invalid", "not found", "not available", "couldn't", "could not", "cannot", "can't", "denied", "already exists", "not configured", "not set", "missing", "doesn't exist", "does not exist", "no messages", "no roles", "no results", "not connected", "expired", "forbidden", "must be", "need manage", "i need", "you need", "unable to", "couldn't find", "could not find")
+        _success_title_terms = (" enabled", " disabled", " created", " updated", " saved", " deleted", " removed", " added", " cleared", " reset", " started", " stopped", " muted", " unmuted", " banned", " unbanned", " kicked", " warned", " locked", " unlocked", " purged", " quarantined", " restored", " renamed", " set", " shared", " cancelled", " canceled", " joined", " left", " sent", " changed", " edited", " configured", " opened", " closed", " pinned", " unpinned", " moved", " copied", " transferred", " assigned", " granted", " revoked", " imported", " exported")
+        _simple_reply = (self.command is not None and not embed.fields and not embed.image and not embed.thumbnail and not embed.author)
+        _command_root = (self.command.qualified_name.split()[0].lower() if self.command is not None else "")
+        # Purely informational/fun commands keep a neutral compact embed. Every
+        # other simple command response gets the same approve/deny action layout,
+        # even if its legacy title did not contain a status word.
+        _neutral_commands = {
+            "help", "h", "commands", "ping", "uptime", "timestamp", "countdown",
+            "avatar", "banner", "userinfo", "user", "memberinfo", "serverinfo", "guildinfo",
+            "botinfo", "servericon", "icon", "roles", "serverroles", "memberlist", "countrole",
+            "channelstats", "permissions", "permissionscheck", "serverage", "uptimeinfo",
+            "categorylist", "threadlist", "forumchannels", "serverfeatures", "boosters",
+            "memberpermissions", "guildpermissions", "randomuser", "roleinfo", "emojiinfo",
+            "emojis", "stickers", "botcount", "humancount", "firstmessage", "invites",
+            "inviteinfo", "voiceinfo", "modlogs", "history", "cases", "case", "proof",
+            "poll", "8ball", "coinflip", "choose", "fact", "joke", "mock", "rate", "roll",
+            "wyr", "rps", "truth", "dare", "wouldyou", "compliment", "reverse", "dice",
+            "hug", "pat", "love", "simp", "gayrate", "howlucky", "ship", "shipname", "naughty",
+            "fm", "lastfm", "np", "nowplaying", "toptracks", "topartists", "topalbums",
+            "servers", "guilds", "status", "stream", "maintenance", "brlist"
+        }
+        _is_error = any(term in _status_text for term in _error_title_terms)
+        _is_success = (any(term in (" " + _title.lower()) for term in _success_title_terms)
+                       or any(term in _desc.lower() for term in ("successfully ", "has been enabled", "has been disabled", "has been updated", "has been saved", "has been deleted", "has been added", "has been removed", "was created", "was updated", "was saved", "was deleted", "was added", "was removed", "is now enabled", "is now disabled")))
+        _should_action_format = _is_error or _is_success or _command_root not in _neutral_commands
+        if _simple_reply and _should_action_format:
+            # Strip the old title heading so the final action line stays minimal.
+            _body = _desc
+            if _title and _body.startswith("#"):
+                _body = re.sub(r"^#+\s*[^\n]+\n?", "", _body).strip()
+            if _is_error:
+                _body = _body or _title or "The command failed."
+                _icon = "<:deny:1558768856552439878>"
+                _color = 0xED4245
+            else:
+                _body = _body or _title or "Command completed."
+                if not _body.lower().startswith(("successfully ", "successfully:", "done", "enabled", "disabled", "created", "updated", "saved", "deleted", "removed", "added", "cleared", "reset", "started", "stopped", "muted", "unmuted", "banned", "unbanned", "kicked", "warned", "locked", "unlocked", "purged", "quarantined", "restored", "renamed", "set ", "shared", "cancelled", "canceled")):
+                    _body = "Successfully " + _body[0].lower() + _body[1:] if _body else "Successfully completed."
+                _icon = "<:approve:1558768853058588682>"
+                _color = 0x57F287
+            _body = _body[0].upper() + _body[1:] if _body else _body
+            if not _body.endswith(("!", ".", "?")):
+                _body += "!" if not _is_error else "."
+            kwargs["embed"] = discord.Embed(description=f"{_icon} {self.author.mention}: {_body}", color=_color)
+            content = None
+            return await _original_context_send(self, content, *args, **kwargs)
         # Normalize explicit command permission-denied embeds to the same
         # compact Bleed-style response as decorator permission failures.
         _permission_text = f"{embed.title or ''} {embed.description or ''}".lower()
@@ -604,13 +657,28 @@ def mod_error(message):
 
 
 def br_response(message, *, success=None):
-    """One-line BR action response using the same approve/deny style as moderation."""
+    """BR actions use the exact compact approve/deny layout used by moderation."""
     text = str(message).strip()
     if success is None:
         lowered = text.lower()
-        failure_terms = ("couldn't", "could not", "can't", "cannot", "must be", "use `", "mention the", "only server", "doesn't have", "don't have", "not enough", "invalid", "valid 6-digit", "discord wouldn't", "discord couldn't", "my highest role", "check my", "role hierarchy", "must be below", "must be above", "already", "role could not", "you don't", "your role could not")
+        failure_terms = ("couldn't", "could not", "can't", "cannot", "must be", "use `", "mention the", "only server", "doesn't have", "don't have", "not enough", "invalid", "valid 6-digit", "discord wouldn't", "discord couldn't", "my highest role", "check my", "role hierarchy", "must be below", "must be above", "already", "role could not", "you don't", "your role could not", "i need ", "you need", "usage:", "mention a member", "create your role first", "there aren't", "no br roles")
         success = not any(term in lowered for term in failure_terms)
+    if success:
+        if not text.lower().startswith("successfully "):
+            text = "Successfully " + text
     return ActionResponseEmbed(text, success=success)
+
+
+def interaction_action_embed(user, message, *, success=True, title=None):
+    """Same compact moderation layout for button/interactions, which bypass ctx.send."""
+    icon = "<:approve:1558768853058588682>" if success else "<:deny:1558768856552439878>"
+    text = str(message).strip()
+    if text:
+        text = text[0].upper() + text[1:]
+    if not text.endswith((".", "!", "?")):
+        text += "!" if success else "."
+    heading = f"# {title.lower()}\n" if title else ""
+    return discord.Embed(description=f"{heading}{icon} {user.mention}: {text}", color=0x57F287 if success else 0xED4245)
 
 
 async def notify_member_mod_action(member, guild, moderator, action, reason="No reason provided", *, duration=None, details=None):
@@ -2958,16 +3026,16 @@ class BRShareView(discord.ui.View):
         super().__init__(timeout=timeout); self.owner_id=owner_id; self.target_id=target_id; self.role_id=role_id; self.done=False
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.target_id: return await interaction.response.send_message("this confirmation is only for the mentioned user.", ephemeral=True)
+        if interaction.user.id != self.target_id: return await interaction.response.send_message(embed=interaction_action_embed(interaction.user, "This confirmation is only for the mentioned user.", success=False, title="br share"), ephemeral=True)
         role=interaction.guild.get_role(self.role_id)
-        if not role or role >= interaction.guild.me.top_role: return await interaction.response.edit_message(content="that role can no longer be shared.", view=None)
+        if not role or role >= interaction.guild.me.top_role: return await interaction.response.edit_message(embed=interaction_action_embed(interaction.user, "That role can no longer be shared.", success=False, title="br share"), content=None, view=None)
         try: await interaction.user.add_roles(role, reason="BR role share accepted")
-        except discord.HTTPException: return await interaction.response.edit_message(content="i couldn't give you that role.", view=None)
-        self.done=True; await interaction.response.edit_message(content=f"{interaction.user.mention} accepted **{role.name}**.", view=None)
+        except discord.HTTPException: return await interaction.response.edit_message(embed=interaction_action_embed(interaction.user, "I couldn't give you that role.", success=False, title="br share"), content=None, view=None)
+        self.done=True; await interaction.response.edit_message(embed=interaction_action_embed(interaction.user, f"Successfully accepted {role.mention}.", success=True, title="br share"), content=None, view=None)
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.target_id: return await interaction.response.send_message("this confirmation is only for the mentioned user.", ephemeral=True)
-        self.done=True; await interaction.response.edit_message(content=f"{interaction.user.mention} declined **{interaction.guild.get_role(self.role_id).name if interaction.guild.get_role(self.role_id) else 'the role'}**.", view=None)
+        if interaction.user.id != self.target_id: return await interaction.response.send_message(embed=interaction_action_embed(interaction.user, "This confirmation is only for the mentioned user.", success=False, title="br share"), ephemeral=True)
+        self.done=True; await interaction.response.edit_message(embed=discord.Embed(description=f"# br share\n{interaction.user.mention}: Declined the role share.", color=COLOR), content=None, view=None)
 
 @bot.command(name="br")
 async def br(ctx, action=None, *, value=""):
@@ -2999,17 +3067,26 @@ async def br(ctx, action=None, *, value=""):
             save_br_overrides()
             deleted = await delete_member_br_role(ctx.guild, target.id, reason=f"BR override removed by {ctx.author}")
             detail = "Their BR role was deleted." if deleted else "Their BR role could not be deleted automatically; check the bot's Manage Roles permission and role hierarchy."
-            return await ctx.send(embed=br_response( f"BR override removed from {target.mention}. {detail}"))
+            return await ctx.send(embed=br_response(f"removed the BR override from {target.mention}. {detail}"))
         users.add(target.id)
         save_br_overrides()
-        return await ctx.send(embed=br_response( f"{target.mention} can now create a BR without boosting."))
+        return await ctx.send(embed=br_response(f"enabled the BR override for {target.mention}."))
 
     if not has_br_access(ctx.author):
         return
     if action == "create":
         if not value.strip(): return await ctx.send(embed=br_response( f"usage: `{PREFIX}br create rolename`"))
-        existing=ctx.guild.get_role(br_config[ctx.guild.id].get(ctx.author.id)) if br_config[ctx.guild.id].get(ctx.author.id) else None
-        if existing: return await ctx.send(embed=br_response( f"you already have {existing.mention}. edit it with `{PREFIX}br color`, `{PREFIX}br icon`, or create a new one after deleting it."))
+        stored_role_id = br_config[ctx.guild.id].get(ctx.author.id)
+        try:
+            existing = ctx.guild.get_role(int(stored_role_id)) if stored_role_id else None
+        except (TypeError, ValueError):
+            existing = None
+        if existing:
+            return await ctx.send(embed=br_response(f"you already have {existing.mention}. You can only have one BR role; edit it with `{PREFIX}br color`, `{PREFIX}br icon`, or delete it before creating another.", success=False))
+        # Clean up a stale ownership record only when its role no longer exists.
+        if stored_role_id:
+            br_config[ctx.guild.id].pop(ctx.author.id, None)
+            save_br_config()
         base_id = br_base_config.get(ctx.guild.id)
         base_role = ctx.guild.get_role(base_id) if base_id else None
         me = ctx.guild.me
@@ -3035,7 +3112,7 @@ async def br(ctx, action=None, *, value=""):
             return await ctx.send(embed=br_response( "the role was created, but i couldn't give it to you. Check my role hierarchy and Manage Roles permission."))
         except discord.HTTPException:
             return await ctx.send(embed=br_response( "the role was created, but Discord wouldn't assign it to you. Try again."))
-        return await ctx.send(embed=br_response(f"created {role.mention}"))
+        return await ctx.send(embed=br_response(f"created {role.mention}."))
     if action == "base":
         if not ctx.author.guild_permissions.administrator:
             return await ctx.send(embed=br_response( "only server administrators can set the BR base role."))
@@ -3066,7 +3143,7 @@ async def br(ctx, action=None, *, value=""):
 
         br_base_config[ctx.guild.id] = target.id
         save_br_base_config()
-        return await ctx.send(embed=br_response(f"base role set to {target.mention}"))
+        return await ctx.send(embed=br_response(f"set the BR base role to {target.mention}."))
 
     if action == "list":
         entries = []
@@ -3106,7 +3183,7 @@ async def br(ctx, action=None, *, value=""):
         br_config[ctx.guild.id].pop(ctx.author.id, None)
         br_color_pairs.get(str(ctx.guild.id), {}).pop(str(ctx.author.id), None)
         save_br_config(); save_br_color_pairs()
-        return await ctx.send(embed=br_response( "your BR role has been deleted."))
+        return await ctx.send(embed=br_response("deleted your BR role."))
     if action in {"help","settings"}: return await ctx.send(embed=make_embed("Booster Role", f"`{PREFIX}br create <rolename>` — create your role\n`{PREFIX}br color <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br colour <#hexcode> [#hexcode]` — solid color or real Discord gradient\n`{PREFIX}br icon <emoji>` — use any Unicode/custom emoji (animated custom emojis become still)\n`{PREFIX}br delete` — delete your BR role\n`{PREFIX}br list` — list BR roles and their creators\n`{PREFIX}br share @user` — ask a user to accept your role\n`{PREFIX}br override @user` — admin: let a user create without boosting\n`{PREFIX}br override remove @user` — admin: revoke an override" + (f"\n\n**Current Role**\n{role.mention}" if role else "\n\n**Current Role**\nnot created")))
     if not role: return await ctx.send(embed=br_response( f"create your role first with `{PREFIX}br create <rolename>`."))
     if role >= ctx.guild.me.top_role: return await ctx.send(embed=br_response( "my highest role must be above your BR role."))
@@ -3122,7 +3199,7 @@ async def br(ctx, action=None, *, value=""):
             return await ctx.send(embed=br_response( "i couldn't rename that role. Check my role hierarchy."))
         except discord.HTTPException:
             return await ctx.send(embed=br_response( "Discord couldn't rename that role."))
-        return await ctx.send(embed=make_embed("BR role renamed", f"**Role**\n{edited.mention} · `{edited.id}`\n\n**New Name**\n`{edited.name}`"))
+        return await ctx.send(embed=br_response(f"renamed your role to `{edited.name}`."))
     if action in {"color","colour"}:
         parts = value.strip().split()
         if len(parts) not in {1, 2}:
@@ -3155,7 +3232,7 @@ async def br(ctx, action=None, *, value=""):
                 )
             br_color_pairs.setdefault(str(ctx.guild.id), {})[str(ctx.author.id)] = [fmt_hex(parts[0]), fmt_hex(parts[1])]
             save_br_color_pairs()
-            return await ctx.send(embed=make_embed("BR gradient updated", f"**Gradient**\n`{fmt_hex(parts[0])}` → `{fmt_hex(parts[1])}`\n\nThe role now uses Discord's native gradient style."))
+            return await ctx.send(embed=br_response(f"updated your role gradient to `{fmt_hex(parts[0])}` → `{fmt_hex(parts[1])}`."))
 
         try:
             await role.edit(color=discord.Color(first), secondary_color=None, reason=f"BR role color changed by {ctx.author}")
@@ -3163,7 +3240,7 @@ async def br(ctx, action=None, *, value=""):
             await role.edit(colour=discord.Color(first), secondary_colour=None, reason=f"BR role color changed by {ctx.author}")
         br_color_pairs.setdefault(str(ctx.guild.id), {})[str(ctx.author.id)] = [fmt_hex(parts[0])]
         save_br_color_pairs()
-        return await ctx.send(embed=make_embed("br role updated", f"**Color**\n`{fmt_hex(parts[0])}`"))
+        return await ctx.send(embed=br_response(f"updated your role color to `{fmt_hex(parts[0])}`."))
     if action == "icon":
         icon_value = value.strip()
         if not icon_value:
@@ -3185,13 +3262,13 @@ async def br(ctx, action=None, *, value=""):
                 await role.edit(display_icon=icon_value, reason=f"BR role icon changed by {ctx.author}")
         except (discord.Forbidden, discord.HTTPException, ValueError, TypeError):
             return await ctx.send(embed=br_response( "Discord couldn't use that emoji as a role icon. Make sure the role is below my highest role and the server supports role icons."))
-        return await ctx.send(embed=br_response("role icon updated"))
+        return await ctx.send(embed=br_response("updated your role icon."))
     if action == "share":
         target=ctx.message.mentions[0] if ctx.message.mentions else None
         if not target: return await ctx.send(embed=br_response( "mention the user you want to share the role with."))
         if target.bot: return await ctx.send(embed=br_response( "you can't share a BR role with a bot."))
         view=BRShareView(ctx.author.id,target.id,role.id)
-        return await ctx.send(f"{target.mention}, **{ctx.author.display_name}** wants to share **{role.name}** with you. Do you want it?", view=view)
+        return await ctx.send(embed=make_embed("br share", f"{target.mention}, **{ctx.author.display_name}** wants to share {role.mention} with you. Accept or decline below."), view=view)
     return await ctx.send(embed=br_response(f"invalid usage · `{PREFIX}br help`", success=False))
 
 @bot.hybrid_group(name="vanity", invoke_without_command=True, description="Configure the /bleeed custom-status role and embed.")
@@ -3622,7 +3699,7 @@ async def modnote(ctx, action="list", member: discord.Member = None, *, note: st
 @bot.group(name="history", aliases=["cases"], invoke_without_command=True)
 async def cases(ctx, member: discord.Member = None):
     if not (ctx.author.guild_permissions.administrator or any(r.id in WARN_ROLES for r in ctx.author.roles)):
-        return
+        return await ctx.send(embed=mod_error("You don't have permission to view moderation history."))
     if member is None:
         return await ctx.send(embed=make_embed("mod history", f"usage: `{PREFIX}history @member` or `{PREFIX}history view <case id>`."))
     entries = modlog_data[ctx.guild.id].get(member.id, [])[-25:]
@@ -4614,7 +4691,7 @@ async def on_raw_reaction_add(payload):
 async def on_command_error(ctx, error):
     """Keep command failures consistent and compact across the entire prefix command registry."""
     command_name = ctx.command.qualified_name if ctx.command else "commandname"
-    invalid = f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use '{PREFIX}h {command_name}'"
+    invalid = f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use `{PREFIX}h {command_name}`"
     # Bleed-style, command-specific usage errors for moderation commands.
     # Keep these short and show the actual prefix syntax instead of a generic help hint.
     mod_usage = {
@@ -4671,7 +4748,7 @@ async def on_command_error(ctx, error):
     if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument, commands.TooManyArguments, commands.UserInputError)):
         usage = mod_usage.get(command_name) or mod_usage.get(ctx.command.name if ctx.command else "")
         if usage:
-            return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use '{PREFIX}h {command_name}'")
+            return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use `{PREFIX}h {command_name}`")
         return await ctx.send(invalid)
     if isinstance(error, commands.MissingPermissions):
         return await ctx.send(embed=mod_error("You don't have permission to use this command."))
@@ -4688,9 +4765,9 @@ async def on_command_error(ctx, error):
             return await ctx.send(embed=mod_error("I couldn't complete that action because of missing permissions or role hierarchy."))
         if isinstance(original, (ValueError, TypeError)):
             return await ctx.send(invalid)
-        return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
+        return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use `{PREFIX}help {command_name}`")
     print(f"Unhandled command error in {ctx.command}: {error!r}")
-    return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use '{PREFIX}help {command_name}'")
+    return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use `{PREFIX}help {command_name}`")
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
@@ -4752,6 +4829,10 @@ async def prefix_remove(ctx):
 async def prefix_self(ctx, *, prefix: str):
     await compat_reply(ctx, "prefix self", "Personal prefixes across servers are not available in this self-hosted bot.")
 
+async def br_compat_reply(ctx, title, body, *, success=None):
+    return await ctx.send(embed=br_response(body, success=success))
+
+
 @bot.command(name="boosterrole", aliases=["brrole"])
 async def boosterrole_compat(ctx, action="help", *, value=""):
     action=action.lower()
@@ -4761,15 +4842,15 @@ async def boosterrole_compat(ctx, action="help", *, value=""):
         return await ctx.invoke(cmd, action, value=value)
     if action in {"random","dominant","cleanup","limit","award","link","filter"}:
         if not compat_need_manage(ctx) and action not in {"random","dominant"}:
-            return await compat_reply(ctx,"Booster Role","You need Manage Server.")
+            return await br_compat_reply(ctx,"Booster Role","You need Manage Server.")
         cfg=compat_guild(ctx).setdefault("boosterrole", {})
         if action in {"random","dominant"}:
             role_id=br_config.get(ctx.guild.id,{}).get(ctx.author.id)
             role=ctx.guild.get_role(role_id) if role_id else None
-            if not role: return await compat_reply(ctx,"Booster Role",f"Create your role first with `{PREFIX}br create <name>`.")
+            if not role: return await br_compat_reply(ctx,"Booster Role",f"Create your role first with `{PREFIX}br create <name>`.")
             color=(random.randint(0,0xFFFFFF) if action=="random" else int(ctx.author.display_avatar.url[-6:],16) if False else random.randint(0,0xFFFFFF))
             await role.edit(color=discord.Color(color))
-            return await compat_reply(ctx,"Booster Role",f"Updated {role.mention}.")
+            return await br_compat_reply(ctx,"Booster Role",f"Updated {role.mention}.")
         if action=="cleanup":
             removed=0
             for owner_id, role_id in list(br_config.get(ctx.guild.id,{}).items()):
@@ -4779,28 +4860,36 @@ async def boosterrole_compat(ctx, action="help", *, value=""):
                     except discord.HTTPException: continue
                     br_config[ctx.guild.id].pop(owner_id,None); removed+=1
             save_br_config()
-            return await compat_reply(ctx,"Booster Role",f"Removed `{removed}` unused booster roles.")
+            return await br_compat_reply(ctx,"Booster Role",f"Removed `{removed}` unused booster roles.")
         if action=="limit":
             try: cfg["limit"]=max(1,min(100,int(value)))
-            except ValueError: return await compat_reply(ctx,"Booster Role","Usage: `,boosterrole limit <1-100>`")
+            except ValueError: return await br_compat_reply(ctx,"Booster Role","Usage: `,boosterrole limit <1-100>`")
         elif action=="award":
             role=ctx.message.role_mentions[0] if ctx.message.role_mentions else None
             cfg["award_role"]=role.id if role else None
         elif action=="link":
             parts=value.split()
-            if len(parts)<2: return await compat_reply(ctx,"Booster Role","Usage: `,boosterrole link @member @role`")
+            if len(parts)<2: return await br_compat_reply(ctx,"Booster Role","Usage: `,boosterrole link @member @role`")
             member=ctx.message.mentions[0] if ctx.message.mentions else None
             role=ctx.message.role_mentions[0] if ctx.message.role_mentions else None
-            if not member or not role: return await compat_reply(ctx,"Booster Role","Mention a member and role.")
-            br_config.setdefault(ctx.guild.id,{})[member.id]=role.id; save_br_config()
-            return await compat_reply(ctx,"Booster Role",f"Linked {role.mention} to {member.mention}.")
+            if not member or not role: return await br_compat_reply(ctx,"Booster Role","Mention a member and role.")
+            # Never overwrite a member's existing BR ownership mapping: doing so
+            # would let them create another role while their original role remains.
+            current_id = br_config.setdefault(ctx.guild.id, {}).get(member.id)
+            current_role = ctx.guild.get_role(current_id) if current_id else None
+            if current_role and current_role.id != role.id:
+                return await br_compat_reply(ctx,"Booster Role",f"{member.mention} already has the BR role {current_role.mention}. They must delete it before linking another role.", success=False)
+            if current_role and current_role.id == role.id:
+                return await br_compat_reply(ctx,"Booster Role",f"{member.mention} already has {role.mention} linked.", success=False)
+            br_config[ctx.guild.id][member.id]=role.id; save_br_config()
+            return await br_compat_reply(ctx,"Booster Role",f"Linked {role.mention} to {member.mention}.")
         elif action=="filter":
             words=cfg.setdefault("blocked_words",[])
-            if not value.strip(): return await compat_reply(ctx,"Booster Role","Usage: `,boosterrole filter <word>`")
+            if not value.strip(): return await br_compat_reply(ctx,"Booster Role","Usage: `,boosterrole filter <word>`")
             if value.lower() not in words: words.append(value.lower())
         compat_save()
-        return await compat_reply(ctx,"Booster Role",f"Saved `{action}` configuration.")
-    await compat_reply(ctx,"Booster Role",f"Use `{PREFIX}br create`, `{PREFIX}br color`, `{PREFIX}br icon`, `{PREFIX}br share`, `{PREFIX}br rename`, `{PREFIX}br delete`, or `{PREFIX}boosterrole {action}`.")
+        return await br_compat_reply(ctx,"Booster Role",f"Saved `{action}` configuration.")
+    await br_compat_reply(ctx,"Booster Role",f"Use `{PREFIX}br create`, `{PREFIX}br color`, `{PREFIX}br icon`, `{PREFIX}br share`, `{PREFIX}br rename`, `{PREFIX}br delete`, or `{PREFIX}boosterrole {action}`.")
 
 @bot.command(name="boosts")
 async def boosts_compat(ctx, action="list", channel: discord.TextChannel=None, *, message=""):
@@ -5528,25 +5617,25 @@ async def proof(ctx):
 @commands.has_permissions(manage_messages=True)
 async def proof_set(ctx, case_id: str, *, explanation: str):
     found = _case_lookup(ctx, case_id)
-    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    if not found: return await ctx.send(embed=mod_error("case ID not found."))
     uid, idx, entry = found; entry["proof"] = explanation[:1000]; save_modlogs()
-    await ctx.send(embed=make_embed("proof updated", f"saved proof explanation for case `{case_id}`."))
+    await ctx.send(embed=mod_success(f"saved proof explanation for case `{case_id}`."))
 
 @proof.command(name="add")
 @commands.has_permissions(manage_messages=True)
 async def proof_add(ctx, case_id: str, media_url: str):
     found = _case_lookup(ctx, case_id)
-    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    if not found: return await ctx.send(embed=mod_error("case ID not found."))
     uid, idx, entry = found; attachments = entry.setdefault("attachments", [])
-    if not media_url.startswith(("https://", "http://")): return await ctx.send(embed=make_embed("proof", "provide a valid http(s) media URL."))
+    if not media_url.startswith(("https://", "http://")): return await ctx.send(embed=mod_error("provide a valid http(s) media URL."))
     attachments.append(media_url[:500]); entry["attachments"] = attachments[-10:]; save_modlogs()
-    await ctx.send(embed=make_embed("proof", f"added attachment to case `{case_id}`."))
+    await ctx.send(embed=mod_success(f"added attachment to case `{case_id}`."))
 
 @proof.command(name="list")
 @commands.has_permissions(manage_messages=True)
 async def proof_list(ctx, case_id: str):
     found = _case_lookup(ctx, case_id)
-    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    if not found: return await ctx.send(embed=mod_error("case ID not found."))
     entry = found[2]; lines = [f"**Explanation:** {entry.get('proof','none')}"]
     lines += [f"`{i}` {url}" for i, url in enumerate(entry.get("attachments", []), 1)]
     await ctx.send(embed=make_embed(f"proof · case {case_id}", "\n".join(lines)))
@@ -5560,16 +5649,16 @@ async def proof_view(ctx, case_id: str):
 @commands.has_permissions(manage_messages=True)
 async def proof_remove(ctx, case_id: str, index: int):
     found = _case_lookup(ctx, case_id)
-    if not found: return await ctx.send(embed=make_embed("proof", "case ID not found."))
+    if not found: return await ctx.send(embed=mod_error("case ID not found."))
     entry = found[2]; attachments = entry.get("attachments", [])
-    if index < 1 or index > len(attachments): return await ctx.send(embed=make_embed("proof", "attachment index not found."))
-    attachments.pop(index-1); save_modlogs(); await ctx.send(embed=make_embed("proof", f"removed attachment `{index}` from case `{case_id}`."))
+    if index < 1 or index > len(attachments): return await ctx.send(embed=mod_error("attachment index not found."))
+    attachments.pop(index-1); save_modlogs(); await ctx.send(embed=mod_success(f"removed attachment `{index}` from case `{case_id}`."))
 
 @cases.command(name="view")
 @commands.has_permissions(manage_messages=True)
 async def history_view(ctx, case_id: str):
     found = _case_lookup(ctx, case_id)
-    if not found: return await ctx.send(embed=make_embed("history", "case ID not found."))
+    if not found: return await ctx.send(embed=mod_error("case ID not found."))
     uid, idx, entry = found
     await ctx.send(embed=make_embed(f"case {case_id}", f"**Member:** <@{uid}>\n**Action:** {entry.get('action','UNKNOWN')}\n**Reason:** {entry.get('reason','No reason provided')}\n**Moderator:** <@{entry.get('moderator_id',0)}>\n**Time:** <t:{int(entry.get('timestamp',time.time()))}:F>"))
 
@@ -5582,15 +5671,15 @@ async def history_remove(ctx, member: discord.Member, case_id: str):
     if idx < 0:
         try: idx = int(case_id) - 1
         except ValueError: idx = -1
-    if idx < 0 or idx >= len(entries): return await ctx.send(embed=make_embed("history", "case not found for that member."))
-    entries.pop(idx); save_modlogs(); await ctx.send(embed=make_embed("history", f"removed case `{case_id}` for {member.mention}."))
+    if idx < 0 or idx >= len(entries): return await ctx.send(embed=mod_error("case not found for that member."))
+    entries.pop(idx); save_modlogs(); await ctx.send(embed=mod_success(f"removed case `{case_id}` for {member.mention}."))
 
 @cases.command(name="removeall")
 @commands.has_permissions(administrator=True)
 async def history_removeall(ctx, member: discord.Member):
     modlog_data[ctx.guild.id].pop(member.id, None); save_modlogs()
     warning_data[ctx.guild.id].pop(member.id, None)
-    await ctx.send(embed=make_embed("history", f"cleared stored punishment history for {member.mention}."))
+    await ctx.send(embed=mod_success(f"cleared stored punishment history for {member.mention}."))
 
 
 @mute.command(name="list")
@@ -5630,7 +5719,7 @@ async def reason_cmd(ctx, case_id: str, *, new_reason: str):
     found=_case_lookup(ctx,case_id)
     if not found: return await ctx.send(embed=make_embed("case reason", "case ID not found."))
     uid,idx,entry=found; entry["reason"]=new_reason[:500]; entry["reason_updated_by"]=ctx.author.id; entry["reason_updated_at"]=int(time.time()); save_modlogs()
-    await ctx.send(embed=make_embed("case reason updated", f"updated reason for case `{case_id}`."))
+    await ctx.send(embed=mod_success(f"updated reason for case `{case_id}`."))
 
 @bot.command(name="setup")
 @commands.has_permissions(administrator=True, manage_channels=True, manage_roles=True)
@@ -5645,7 +5734,7 @@ async def setup_moderation(ctx):
             await channel.set_permissions(muted,overwrite=ow,reason="moderation setup")
         except (discord.Forbidden,discord.HTTPException): pass
     cfg=guild_cfg(ctx.guild.id); cfg["modlog_channel"]=log_channel.id; cfg["muted_role"]=muted.id; save_ultimate_config()
-    await ctx.send(embed=make_embed("moderation setup complete", f"**Mod logs:** {log_channel.mention}\n**Muted role:** {muted.mention}"))
+    await ctx.send(embed=mod_success(f"moderation setup complete. Mod logs: {log_channel.mention} · Muted role: {muted.mention}"))
 
 @bot.command(name="caselog")
 @commands.has_permissions(manage_messages=True)
@@ -5757,10 +5846,10 @@ class NukeConfirmView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("only the administrator who started this nuke can use these buttons.", ephemeral=True)
+            await interaction.response.send_message(embed=interaction_action_embed(interaction.user, "Only the administrator who started this nuke can use these buttons.", success=False, title="nuke"), ephemeral=True)
             return False
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("administrator permission is required.", ephemeral=True)
+            await interaction.response.send_message(embed=interaction_action_embed(interaction.user, "Administrator permission is required.", success=False, title="nuke"), ephemeral=True)
             return False
         return True
 
@@ -5777,29 +5866,20 @@ class NukeConfirmView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = bot.get_channel(self.channel_id)
         if not isinstance(channel, discord.TextChannel):
-            return await interaction.response.edit_message(embed=discord.Embed(
-                description=f"# nuke\n<:deny:1558768856552439878> {interaction.user.mention}: The original text channel is no longer available.",
-                color=0xED4245,
-            ), content=None, view=None)
+            return await interaction.response.edit_message(embed=interaction_action_embed(interaction.user, "The original text channel is no longer available.", success=False, title="nuke"), content=None, view=None)
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             clone = await channel.clone(reason=f"channel nuked by {interaction.user} ({interaction.user.id})")
             await clone.edit(position=channel.position)
             await channel.delete(reason=f"channel nuked by {interaction.user} ({interaction.user.id})")
-            await clone.send(embed=make_embed("nuke", f"channel recreated by {interaction.user.mention}."))
-            await interaction.followup.send(embed=discord.Embed(
-                description=f"# nuke\n<:approve:1558768853058588682> {interaction.user.mention}: Successfully recreated {clone.mention}.",
-                color=0x57F287,
-            ), ephemeral=True)
+            await clone.send(embed=interaction_action_embed(interaction.user, f"Successfully recreated {clone.mention}.", success=True, title="nuke"))
+            await interaction.followup.send(embed=interaction_action_embed(interaction.user, f"Successfully recreated {clone.mention}.", success=True, title="nuke"), ephemeral=True)
         except (discord.Forbidden, discord.HTTPException):
-            await interaction.followup.send(embed=discord.Embed(
-                description=f"# nuke\n<:deny:1558768856552439878> {interaction.user.mention}: Couldn't complete the nuke. Check bleeed's Manage Channels permission and role access.",
-                color=0xED4245,
-            ), ephemeral=True)
+            await interaction.followup.send(embed=interaction_action_embed(interaction.user, "Couldn't complete the nuke. Check bleeed's Manage Channels permission and role access.", success=False, title="nuke"), ephemeral=True)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="nuke cancelled.", embed=None, view=None)
+        await interaction.response.edit_message(content=None, embed=discord.Embed(description=f"# nuke\n{interaction.user.mention}: Nuke cancelled.", color=COLOR), view=None)
         self.stop()
 
 @bot.group(name="nuke", invoke_without_command=True)
@@ -5823,16 +5903,10 @@ class NukeRolesConfirmView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(embed=discord.Embed(
-                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: Only the administrator who started this action can use these buttons.",
-                color=0xED4245,
-            ), ephemeral=True)
+            await interaction.response.send_message(embed=interaction_action_embed(interaction.user, "Only the administrator who started this action can use these buttons.", success=False, title="nuke roles"), ephemeral=True)
             return False
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(embed=discord.Embed(
-                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: Administrator permission is required.",
-                color=0xED4245,
-            ), ephemeral=True)
+            await interaction.response.send_message(embed=interaction_action_embed(interaction.user, "Administrator permission is required.", success=False, title="nuke roles"), ephemeral=True)
             return False
         return True
 
@@ -5849,10 +5923,7 @@ class NukeRolesConfirmView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = bot.get_guild(self.guild_id)
         if guild is None or guild.me is None:
-            return await interaction.response.edit_message(embed=discord.Embed(
-                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: I couldn't access this server.",
-                color=0xED4245,
-            ), view=None)
+            return await interaction.response.edit_message(embed=interaction_action_embed(interaction.user, "I couldn't access this server.", success=False, title="nuke roles"), view=None)
         await interaction.response.defer(ephemeral=True, thinking=True)
         bot_top_role = guild.me.top_role
         candidates = [
@@ -5875,24 +5946,15 @@ class NukeRolesConfirmView(discord.ui.View):
             except (discord.Forbidden, discord.HTTPException):
                 skipped += 1
         if deleted:
-            embed = discord.Embed(
-                description=f"# nuke roles\n<:approve:1558768853058588682> {interaction.user.mention}: Successfully deleted **{deleted}** role{'s' if deleted != 1 else ''}.\nSkipped **{skipped}** role{'s' if skipped != 1 else ''} that couldn't be deleted or weren't manageable.",
-                color=0x57F287,
-            )
+            embed = interaction_action_embed(interaction.user, f"Successfully deleted **{deleted}** role{'s' if deleted != 1 else ''}. Skipped **{skipped}** role{'s' if skipped != 1 else ''} that couldn't be deleted or weren't manageable.", success=True, title="nuke roles")
         else:
-            embed = discord.Embed(
-                description=f"# nuke roles\n<:deny:1558768856552439878> {interaction.user.mention}: Couldn't delete any roles. Check bleeed's **Manage Roles** permission and role hierarchy.\nSkipped **{skipped}** role{'s' if skipped != 1 else ''}.",
-                color=0xED4245,
-            )
+            embed = interaction_action_embed(interaction.user, f"Couldn't delete any roles. Check bleeed's **Manage Roles** permission and role hierarchy. Skipped **{skipped}** role{'s' if skipped != 1 else ''}.", success=False, title="nuke roles")
         await interaction.followup.send(embed=embed, ephemeral=True)
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(embed=discord.Embed(
-            description=f"# nuke roles\n{interaction.user.mention}: Role nuke cancelled.",
-            color=COLOR,
-        ), view=None)
+        await interaction.response.edit_message(embed=discord.Embed(description=f"# nuke roles\n{interaction.user.mention}: Role nuke cancelled.", color=COLOR), content=None, view=None)
         self.stop()
 
 @nuke.command(name="roles")
