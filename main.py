@@ -122,13 +122,11 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
         # Normalize explicit command permission-denied embeds to the same
         # compact Bleed-style response as decorator permission failures.
         _permission_text = f"{embed.title or ''} {embed.description or ''}".lower()
-        if (self.command is not None and "no permission" in _permission_text
-                and any(term in _permission_text for term in ("you need", "you don't", "required", "configured moderation role"))):
-            denied = ActionResponseEmbed("You don't have permission to use this command.", success=False)
-            message = denied.response_message
+        if (self.command is not None and any(term in _permission_text for term in ("no permission", "you don't have the required warn role", "you need manage server", "you need the required", "you don't have permission"))):
+            command_name = self.command.qualified_name
             kwargs["embed"] = discord.Embed(
-                description=f"<:deny:1558768856552439878> {self.author.mention}: {message}",
-                color=0xED4245,
+                description=f"<:warning:743006201981173831> {self.author.mention}: You don't have a permitted role to use `{command_name}`",
+                color=0xEDC75A,
             )
             content = None
             return await _original_context_send(self, content, *args, **kwargs)
@@ -2888,21 +2886,29 @@ async def nick(ctx, member: discord.Member, *, nickname: str = None):
 async def addrole(ctx, member: discord.Member = None, role: discord.Role = None):
     """Toggle a role on a member: add it once, remove it if used again."""
     if member is None or role is None:
-        return await ctx.send(embed=make_embed("role", f"usage: `{PREFIX}role <member> <role>` or `{PREFIX}role <subcommand>`."))
+        return await ctx.send(embed=discord.Embed(
+            description=f"<:deny:1558768856552439878> {ctx.author.mention}: Error\nInvalid arguments. Use `{PREFIX}h role`",
+            color=0xED4245,
+        ))
     if role >= ctx.guild.me.top_role or (not ctx.author.guild_permissions.administrator and role >= ctx.author.top_role):
-        return await ctx.send(embed=make_embed("error", "that role is too high for you or the bot."))
-    if role in member.roles:
-        await member.remove_roles(role, reason=f"role toggled off by {ctx.author}")
-        icon = "<:remove:1557785190183600258>"
-        message = f"Successfully removed {role.mention} from {member.mention}!"
-    else:
-        await member.add_roles(role, reason=f"role toggled on by {ctx.author}")
-        icon = "<:add:1557785192712642634>"
-        message = f"Successfully added {role.mention} to {member.mention}!"
-    await ctx.send(embed=discord.Embed(
-        description=f"{icon} {ctx.author.mention}: {message}",
-        color=COLOR,
-    ))
+        return await ctx.send(embed=discord.Embed(
+            description=f"<:warning:743006201981173831> {ctx.author.mention}: You don't have a permitted role to use `role`",
+            color=0xEDC75A,
+        ))
+    try:
+        if role in member.roles:
+            await member.remove_roles(role, reason=f"role toggled off by {ctx.author}")
+            icon = "<:remove:1557785190183600258>"
+            message = f"Removed {role.mention} from {member.mention}."
+        else:
+            await member.add_roles(role, reason=f"role toggled on by {ctx.author}")
+            icon = "<:add:1557785192712642634>"
+            message = f"Added {role.mention} to {member.mention}."
+    except discord.Forbidden:
+        return await ctx.send(embed=mod_error(f"Couldn't change {role.mention} for {member.mention}. Check role hierarchy and permissions."))
+    except discord.HTTPException:
+        return await ctx.send(embed=mod_error(f"Couldn't change {role.mention} for {member.mention}."))
+    await ctx.send(embed=discord.Embed(description=f"{icon} {ctx.author.mention}: {message}", color=0x57F287))
 
 
 @bot.hybrid_command(name="removerole")
@@ -3433,17 +3439,16 @@ async def create_role(ctx, *, name: str):
     """Create a new server role."""
     name = name.strip()
     if not name:
-        return await ctx.send(embed=make_embed("create role", "role name cannot be empty."))
+        return await ctx.send(embed=mod_error("Error\nInvalid arguments. Use `,h create role`"))
     if len(name) > 100:
-        return await ctx.send(embed=make_embed("create role", "role names can be up to 100 characters."))
-    role = await ctx.guild.create_role(name=name, reason=f"role created by {ctx.author}")
-    e = make_embed(
-        "role created",
-        f"**name:** {role.mention}\n**id:** `{role.id}`\n**created by:** {ctx.author.mention}"
-    )
-    if ctx.guild.icon:
-        e.set_thumbnail(url=ctx.guild.icon.url)
-    await ctx.send(embed=e)
+        return await ctx.send(embed=mod_error("Role names can be up to 100 characters."))
+    try:
+        role = await ctx.guild.create_role(name=name, reason=f"role created by {ctx.author}")
+    except discord.Forbidden:
+        return await ctx.send(embed=mod_error("Couldn't create that role. Check my permissions and role hierarchy."))
+    except discord.HTTPException:
+        return await ctx.send(embed=mod_error("Couldn't create that role."))
+    await ctx.send(embed=mod_success(f"Created {role.mention} successfully!"))
 
 
 @create.command(name="channel")
@@ -4691,7 +4696,7 @@ async def on_raw_reaction_add(payload):
 async def on_command_error(ctx, error):
     """Keep command failures consistent and compact across the entire prefix command registry."""
     command_name = ctx.command.qualified_name if ctx.command else "commandname"
-    invalid = f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use `{PREFIX}h {command_name}`"
+    invalid = f"<:deny:1558768856552439878> {ctx.author.mention}: Error\nInvalid arguments. Use `{PREFIX}h {command_name}`"
     # Bleed-style, command-specific usage errors for moderation commands.
     # Keep these short and show the actual prefix syntax instead of a generic help hint.
     mod_usage = {
@@ -4748,10 +4753,10 @@ async def on_command_error(ctx, error):
     if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument, commands.TooManyArguments, commands.UserInputError)):
         usage = mod_usage.get(command_name) or mod_usage.get(ctx.command.name if ctx.command else "")
         if usage:
-            return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Invalid arguments. Use `{PREFIX}h {command_name}`")
-        return await ctx.send(invalid)
+            return await ctx.send(embed=discord.Embed(description=invalid, color=0xED4245))
+        return await ctx.send(embed=discord.Embed(description=invalid, color=0xED4245))
     if isinstance(error, commands.MissingPermissions):
-        return await ctx.send(embed=mod_error("You don't have permission to use this command."))
+        return await ctx.send(embed=discord.Embed(description=f"<:warning:743006201981173831> {ctx.author.mention}: You don't have a permitted role to use `{command_name}`", color=0xEDC75A))
     if isinstance(error, commands.BotMissingPermissions):
         return await ctx.send(embed=mod_error("I don't have the required permissions to do that."))
     if isinstance(error, commands.CommandOnCooldown):
@@ -4764,7 +4769,7 @@ async def on_command_error(ctx, error):
         if isinstance(original, discord.Forbidden):
             return await ctx.send(embed=mod_error("I couldn't complete that action because of missing permissions or role hierarchy."))
         if isinstance(original, (ValueError, TypeError)):
-            return await ctx.send(invalid)
+            return await ctx.send(embed=discord.Embed(description=invalid, color=0xED4245))
         return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use `{PREFIX}help {command_name}`")
     print(f"Unhandled command error in {ctx.command}: {error!r}")
     return await ctx.send(f"<:warning:743006201981173831> {ctx.author.mention}: Command failed. Use `{PREFIX}help {command_name}`")
@@ -5890,7 +5895,7 @@ async def nuke(ctx):
         return await ctx.send(embed=make_embed("nuke", "use this command in a regular text channel, not a thread or voice channel."))
     view = NukeConfirmView(ctx.author.id, ctx.channel.id)
     view.message = await ctx.send(
-        embed=make_embed("nuke", f"are you sure you want to delete and recreate {ctx.channel.mention}?\n\nthis removes the channel's message history. this prompt expires in 30 seconds."),
+        embed=make_embed("nuke", f"<:warning:1558898641698164839> are you sure you want to delete and recreate {ctx.channel.mention}?\n\nthis removes the channel's message history. this prompt expires in 30 seconds."),
         view=view,
     )
 
@@ -5972,7 +5977,7 @@ async def nuke_roles(ctx):
     view = NukeRolesConfirmView(ctx.author.id, guild.id)
     view.message = await ctx.send(embed=make_embed(
         "nuke roles",
-        f"This will permanently delete **{len(candidates)}** manageable roles in this server.\n\nRoles at or above bleeed's highest role, @everyone, and integration/bot-managed roles will never be targeted.\n\nConfirm within 30 seconds.",
+        f"<:warning:1558898641698164839> This will permanently delete **{len(candidates)}** manageable roles in this server.\n\nRoles at or above bleeed's highest role, @everyone, and integration/bot-managed roles will never be targeted.\n\nConfirm within 30 seconds.",
     ), view=view)
 
 @slowmode.command(name="set")
