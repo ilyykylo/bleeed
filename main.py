@@ -92,7 +92,8 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
             "wyr", "rps", "truth", "dare", "wouldyou", "compliment", "reverse", "dice",
             "hug", "pat", "love", "simp", "gayrate", "howlucky", "ship", "shipname", "naughty",
             "fm", "lastfm", "np", "nowplaying", "toptracks", "topartists", "topalbums",
-            "servers", "guilds", "status", "stream", "maintenance", "brlist"
+            "servers", "guilds", "status", "stream", "maintenance", "brlist",
+            "userroles", "rolemembers", "boosts", "afklist", "rolelist", "memberroles"
         }
         _is_error = any(term in _status_text for term in _error_title_terms)
         _is_success = (any(term in (" " + _title.lower()) for term in _success_title_terms)
@@ -101,7 +102,9 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
         if _simple_reply and _should_action_format:
             # Strip the old title heading so the final action line stays minimal.
             _body = _desc
-            if _title and _body.startswith("#"):
+            # make_embed stores legacy headings inside the description ("# title"),
+            # so remove that first line regardless of whether embed.title is set.
+            if _body.startswith("#"):
                 _body = re.sub(r"^#+\s*[^\n]+\n?", "", _body).strip()
             if _is_error:
                 _body = _body or _title or "The command failed."
@@ -139,6 +142,9 @@ async def _bleeed_context_send(self, content=None, *args, **kwargs):
             if not existing_description.lower().startswith(heading.lower()):
                 embed.description = f"{heading}\n{embed.description}" if embed.description else heading
             embed.title = None
+        # Keep useful headings, but never show the unwanted literal # marker.
+        if embed.description:
+            embed.description = re.sub(r"(?m)^#+\s+", "", embed.description)
         embed.color = discord.Color(COLOR)
         embed.remove_author()
         embed.remove_footer()
@@ -675,8 +681,8 @@ def interaction_action_embed(user, message, *, success=True, title=None):
         text = text[0].upper() + text[1:]
     if not text.endswith((".", "!", "?")):
         text += "!" if success else "."
-    heading = f"# {title.lower()}\n" if title else ""
-    return discord.Embed(description=f"{heading}{icon} {user.mention}: {text}", color=0x57F287 if success else 0xED4245)
+    # Keep the same compact action layout as prefix commands; no legacy # title.
+    return discord.Embed(description=f"{icon} {user.mention}: {text}", color=0x57F287 if success else 0xED4245)
 
 
 async def notify_member_mod_action(member, guild, moderator, action, reason="No reason provided", *, duration=None, details=None):
@@ -1568,7 +1574,7 @@ async def on_message(message):
             elapsed = max(0, int(time.time() - data.get("since", time.time())))
             duration = format_duration(elapsed) if "format_duration" in globals() else (f"{elapsed} second{'s' if elapsed != 1 else ''}")
             await message.channel.send(embed=discord.Embed(
-                description=f"💤 <@{uid}> has been AFK for **{duration}**",
+                description=f"💤 <@{uid}> has been afk for **{duration}**",
                 color=COLOR
             ), delete_after=8)
     await bot.process_commands(message)
@@ -2937,7 +2943,7 @@ async def deleterole(ctx, role: discord.Role):
         await role.delete(reason=f"role deleted by {ctx.author}")
     except discord.HTTPException:
         return await ctx.send(embed=make_embed("delete role", "Discord denied deleting that role."))
-    await ctx.send(embed=make_embed("role deleted", f"**Name**\n`{role_name}`\n\n**ID**\n`{role_id}`\n\n**Deleted By**\n{ctx.author.mention}"))
+    await ctx.send(embed=mod_success(f"deleted role **{role_name}** successfully!"))
 
 
 def parse_role_changes(raw):
@@ -3041,7 +3047,7 @@ class BRShareView(discord.ui.View):
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.target_id: return await interaction.response.send_message(embed=interaction_action_embed(interaction.user, "This confirmation is only for the mentioned user.", success=False, title="br share"), ephemeral=True)
-        self.done=True; await interaction.response.edit_message(embed=discord.Embed(description=f"# br share\n{interaction.user.mention}: Declined the role share.", color=COLOR), content=None, view=None)
+        self.done=True; await interaction.response.edit_message(embed=discord.Embed(description=f"<:deny:1558768856552439878> {interaction.user.mention}: Declined the role share.", color=COLOR), content=None, view=None)
 
 @bot.command(name="br")
 async def br(ctx, action=None, *, value=""):
@@ -5884,7 +5890,7 @@ class NukeConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=None, embed=discord.Embed(description=f"# nuke\n{interaction.user.mention}: Nuke cancelled.", color=COLOR), view=None)
+        await interaction.response.edit_message(content=None, embed=discord.Embed(description=f"<:deny:1558768856552439878> {interaction.user.mention}: Nuke cancelled.", color=COLOR), view=None)
         self.stop()
 
 @bot.group(name="nuke", invoke_without_command=True)
@@ -5959,7 +5965,7 @@ class NukeRolesConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(embed=discord.Embed(description=f"# nuke roles\n{interaction.user.mention}: Role nuke cancelled.", color=COLOR), content=None, view=None)
+        await interaction.response.edit_message(embed=discord.Embed(description=f"<:deny:1558768856552439878> {interaction.user.mention}: Role nuke cancelled.", color=COLOR), content=None, view=None)
         self.stop()
 
 @nuke.command(name="roles")
@@ -6154,7 +6160,7 @@ async def rolecolor(ctx, role: discord.Role, colour: str):
 @bot.command(name="rolecreate")
 @commands.has_permissions(manage_roles=True)
 async def rolecreate(ctx, *, name: str):
-    role=await ctx.guild.create_role(name=name[:100], reason=f"role created by {ctx.author}"); await ctx.send(embed=make_embed("role created", f"created {role.mention}."))
+    role=await ctx.guild.create_role(name=name[:100], reason=f"role created by {ctx.author}"); await ctx.send(embed=mod_success(f"created role {role.mention} successfully!"))
 
 @bot.command(name="roleedit")
 @commands.has_permissions(manage_roles=True)
@@ -6417,7 +6423,7 @@ async def role_color_sub(ctx, colour: str = None, role: discord.Role = None, sec
 @addrole.command(name="create")
 @commands.has_permissions(manage_roles=True)
 async def role_create_sub(ctx, *, name: str):
-    role=await ctx.guild.create_role(name=name[:100], reason=f"role created by {ctx.author}"); await ctx.send(embed=make_embed("role created", f"created {role.mention}."))
+    role=await ctx.guild.create_role(name=name[:100], reason=f"role created by {ctx.author}"); await ctx.send(embed=mod_success(f"created role {role.mention} successfully!"))
 
 @addrole.command(name="icon")
 @commands.has_permissions(manage_roles=True)
